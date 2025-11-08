@@ -1,15 +1,23 @@
 import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
+import { Newsreader, IBM_Plex_Mono, Nanum_Myeongjo } from "next/font/google";
 import "./globals.css";
 
-const geistSans = Geist({
-  variable: "--font-geist-sans",
+const newsreader = Newsreader({
   subsets: ["latin"],
+  weight: ["300", "400", "500", "600", "700"],
+  variable: "--font-newsreader",
 });
 
-const geistMono = Geist_Mono({
-  variable: "--font-geist-mono",
+const IBMPlexMono = IBM_Plex_Mono({
   subsets: ["latin"],
+  weight: ["400", "700"],
+  variable: "--font-ibm-plex-mono",
+});
+
+const NanumMyeongjo = Nanum_Myeongjo({
+  subsets: ["latin"],
+  weight: ["400", "700", "800"],
+  variable: "--font-nanum-myeongjo",
 });
 
 export const metadata: Metadata = {
@@ -25,7 +33,7 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body
-        className={`${geistSans.variable} ${geistMono.variable} antialiased`}
+        className={`${newsreader.variable} ${IBMPlexMono.variable} ${NanumMyeongjo.variable} antialiased`}
       >
         {children}
       </body>
