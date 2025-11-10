@@ -29,7 +29,7 @@ export default function Home() {
       ctx.drawImage(canvasRef.current, 40, 100);
 
       const link = document.createElement('a');
-      link.download = 'canvas.png';
+      link.download = passageHeader ? `${passageHeader}-textellation.png` : 'textellation.png';
       link.href = exportCanvas.toDataURL();
       link.click();
     }
