@@ -8,12 +8,9 @@ const SLACK = 0.78;
 const MAX_PARAS = 9;
 const MIN_WORDS_PER_PARA = 3;
 
-const INK = '#0B0F16';            // background
-const BLUE = '#272757';           // accent (labels/links)
-const DEEP = '#121C2D';           // subtle surfaces (if needed)
+const INK = '#0B0F16';
 const VEIL = '#ffffff20';
 
-// ---- sizing (unchanged math) ----
 function ellipseSizeFromWords(wc: number, W: number) {
   const minS = 18, maxS = 160, mix = 0.45;
   const sLin  = wc * (W / 230);
@@ -36,7 +33,6 @@ function estimateCapPerPara(paragraphCount: number) {
   return lo;
 }
 
-// Preflight with MAX_PARAS enforced
 function preflightBoundFromRawText(raw: string) {
   const all = raw
     .split(/\n{2,}/)

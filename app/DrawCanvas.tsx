@@ -239,9 +239,13 @@ useEffect(() => {
 
   if (packed === "FAIL") {
     ctx.save();
+    bgctx.clearRect(0, 0, bg.width, bg.height);
+    bgctx.fillStyle = 'white';
+    bgctx.fillRect(0, 0, bg.width, bg.height);
+    ctx.clearRect(0, 0, fg.width, fg.height);
     ctx.fillStyle = '#b00020';
-    ctx.font = '16px Newsreader';
-    ctx.fillText('Content cannot fit even at minimum scale.', 20, 32);
+    ctx.font = '60px Newsreader';
+    ctx.fillText('Content cannot fit, please enter a shorter passage.', 720, 32);
     ctx.restore();
     return;
   }

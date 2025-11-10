@@ -40,7 +40,7 @@ export default function InfoModal({ isOpen, closeModule }: InfoModalProps) {
       </h2>
       <p className="mb-2">this is a typographic constellation maker. map words like stars!</p>
       <p className="mb-4">
-        made with <span aria-hidden>⁂</span> by{' '}
+        made with <span aria-hidden>❤</span> by{' '}
         <a
           href="https://www.estellekimdev.com/"
           target="_blank"

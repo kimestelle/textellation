@@ -2,13 +2,14 @@
 import { useState, useEffect, useRef } from 'react';
 import DrawCanvas from "./DrawCanvas";
 import TextEditModal from './components/textEditModal';
+import { littlePrince } from './components/examples';
 import InfoModal from './components/infoModal';
 
 export default function Home() {
-  const [passageText, setPassageText] = useState<string | undefined>('');
-  const [passageHeader, setPassageHeader] = useState<string | undefined>('');
-  const [modalOpen, setModalOpen] = useState<boolean>(true); 
-  const [infoOpen, setInfoOpen] = useState<boolean>(false);
+  const [passageText, setPassageText] = useState<string | undefined>(littlePrince.text);
+  const [passageHeader, setPassageHeader] = useState<string | undefined>(littlePrince.header);
+  const [modalOpen, setModalOpen] = useState<boolean>(false); 
+  const [infoOpen, setInfoOpen] = useState<boolean>(true);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const bgRef = useRef<HTMLCanvasElement | null>(null);
 
