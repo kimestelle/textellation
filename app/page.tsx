@@ -1,13 +1,15 @@
 'use client';
-import { useState, useEffect, useRef } from 'react';
+import { useState, useRef } from 'react';
 import DrawCanvas from "./DrawCanvas";
+import { CanvasOption } from './settings/canvasOptions';
 import TextEditModal from './components/textEditModal';
-import { littlePrince } from './components/examples';
+import { littlePrince } from './settings/examples';
 import InfoModal from './components/infoModal';
 
 export default function Home() {
   const [passageText, setPassageText] = useState<string | undefined>(littlePrince.text);
   const [passageHeader, setPassageHeader] = useState<string | undefined>(littlePrince.header);
+  const [canvasOption, setCanvasOption] = useState<CanvasOption | null>(null)
   const [modalOpen, setModalOpen] = useState<boolean>(false); 
   const [infoOpen, setInfoOpen] = useState<boolean>(true);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -37,17 +39,18 @@ export default function Home() {
 
   return (
     <div className="flex flex-col w-[100svw] h-[100svh] items-center justify-center bg-neutral-900 text-neutral-200 overflow-hidden">
-      {(passageText && passageHeader && canvasRef && bgRef) &&
-        <DrawCanvas passageText={passageText} passageHeader={passageHeader} canvasRef={canvasRef} bgRef={bgRef}/>
+      {(passageText && passageHeader && canvasRef && bgRef && canvasOption) &&
+        <DrawCanvas passageText={passageText} passageHeader={passageHeader} canvasOption={canvasOption} canvasRef={canvasRef} bgRef={bgRef}/>
       }
         <TextEditModal
           isOpen={modalOpen}
           onClose={() => {
             setModalOpen(false);
           }}
-          onSave={(text, header) => {
+          onSave={(text, header, canvasOption) => {
             setPassageText(text);
             setPassageHeader(header);
+            setCanvasOption(canvasOption)
             setModalOpen(false);
           }}
         />
@@ -57,25 +60,34 @@ export default function Home() {
             setInfoOpen(false);
           }}
         />
-        <div className='absolute top-0 pt-2 px-4 w-full flex flex-row gap-2 justify-between items-between'>
-          <button
+        <div className='absolute top-0 pt-3 px-4 w-full flex flex-row gap-2 justify-center items-between'>
+            <button
+            onClick={() => {
+              setInfoOpen(true);
+            }}
+            >
+                textellation_.*🟅
+            </button>
+            <div className='w-8'/>
+          {/* <button
             onClick={() => {
               setInfoOpen(true);
             }}
           >
             info
-          </button>
+          </button> */}
           <button
             onClick={() => {
               setModalOpen(true);
             }} 
           >
-            edit
+            {'<edit>'}
           </button>
+          <h5>-</h5>
           <button
             onClick={exportCanvasHandler}
           >
-            to png
+            {'<download image>'}
           </button>
         </div>
     </div>

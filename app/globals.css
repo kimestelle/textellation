@@ -12,6 +12,10 @@ body {
   font-weight: 500
 }
 
+h2 {
+  font-size: 1.2em;
+}
+
 button:hover {
   cursor: pointer;
   opacity: 0.8;

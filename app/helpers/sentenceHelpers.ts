@@ -5,9 +5,9 @@ export type CloudWord = {
   w: number; h: number;
   text: string;
   paragraphIndex: number;
-  sentenceIndex: number;   // original sentence id (for loose grouping)
-  wordIndex: number;       // index within sentence (appearance order)
-  scale: number;           // paragraph text scale applied (0..1]
+  sentenceIndex: number;
+  wordIndex: number;
+  scale: number;
 };
 
 export type CloudConnector = {
@@ -99,19 +99,6 @@ function sunflowerInEllipse(
   return pts;
 }
 
-// Monotone chain convex hull
-function convexHull(points: {x:number;y:number}[]): {x:number;y:number}[] {
-  if (points.length < 3) return points.slice();
-  const pts = points.slice().sort((a,b) => a.x === b.x ? a.y - b.y : a.x - b.x);
-  const cross = (o:{x: number, y: number}, a:{x: number, y: number}, b:{x: number, y: number}) => (a.x-o.x)*(b.y-o.y) - (a.y-o.y)*(b.x-o.x);
-  const lower:{x: number, y: number}[] = [];
-  for (const p of pts) { while (lower.length>=2 && cross(lower[lower.length-2], lower[lower.length-1], p)<=0) lower.pop(); lower.push(p); }
-  const upper:{x: number, y: number}[] = [];
-  for (let i=pts.length-1;i>=0;i--){ const p=pts[i]; while(upper.length>=2 && cross(upper[upper.length-2], upper[upper.length-1], p)<=0) upper.pop(); upper.push(p); }
-  upper.pop(); lower.pop();
-  return lower.concat(upper);
-}
-
 /**
  * Flow layout inside an ellipse.
  * Preserves word order. Rows curve with the ellipse boundary.
@@ -161,7 +148,6 @@ function flowLayoutInEllipse(
     const rowStart = iWord;
     while (iWord < words.length) {
       const w = words[iWord].width * scale;
-      const h = words[iWord].height * scale;
       const need = (iWord === rowStart ? w : w + gap);
       if (x + need > right) break;
       // place word center

@@ -144,7 +144,7 @@ export function drawBackgroundGrid(
   gridSize: number,
   lineWidth: number,
   lineColor: string,
-  border: number = 25
+  border: number,
 ) {
   ctx.save();
 
@@ -182,6 +182,10 @@ export function drawBackgroundGrid(
     ctx.lineTo(gx1, y);
     ctx.stroke();
   }
+  // ctx.strokeStyle = 'white';
+  ctx.lineWidth = 2;
+  //draw outer border thicker
+  ctx.strokeRect(gx0, gy0, W - (border * 2), H - (border * 2));
 
   ctx.restore();
 }
@@ -279,6 +283,26 @@ export function drawWrappedColumns(
   ctx.restore();
 }
 
+export function drawSimpleFooter(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  width: number,
+  height: number,
+) : void {
+  ctx.save();
+  const fontPx = 14;
+  ctx.font = `${fontPx}px ibm-plex-mono, monospace`;
+  ctx.fillStyle = '#ffffff80';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+
+  const footerText = "textellations - crafted wth love by estelle kim";
+  ctx.fillText(footerText, x + width / 2, y + height / 2);
+
+  ctx.restore();
+}
+
 export function drawHeader(
   ctx: CanvasRenderingContext2D,
   text: string,
@@ -308,11 +332,11 @@ export function drawHeader(
   //draw line in remaining width with intermittend ascii stars
   const textWidth = ctx.measureText(text).width;
   const lineStartX = x + textWidth + 20;
-  const remainingWidth = ctx.canvas.width - lineStartX - 40;
+  const remainingWidth = ctx.canvas.width - lineStartX - x;
 
   ctx.beginPath();
-  ctx.lineTo(lineStartX, y + 30);
-  ctx.lineTo(lineStartX + remainingWidth, y + 30);
+  ctx.lineTo(lineStartX, y + ctx.measureText(text).actualBoundingBoxDescent);
+  ctx.lineTo(lineStartX + remainingWidth, y + ctx.measureText(text).actualBoundingBoxDescent);
   ctx.setLineDash([5, 10]);
   ctx.lineWidth = 1;
   ctx.strokeStyle = color;

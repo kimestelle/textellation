@@ -1,9 +1,8 @@
 // TextEditModal.tsx
 import { useState } from 'react';
-import { littlePrince, lookingGlass } from './examples';
+import { littlePrince, lookingGlass } from '../settings/examples';
+import { CANVAS_OPTIONS, CanvasOption } from "../settings/canvasOptions";
 
-const CANVAS_W = 2000;
-const CANVAS_H = 2800;
 const SLACK = 0.78;
 const MAX_PARAS = 9;
 const MIN_WORDS_PER_PARA = 3;
@@ -22,7 +21,7 @@ function rectAreaFromWords(wc: number, W: number) {
   const { rx, ry } = ellipseSizeFromWords(wc, W);
   return (2 * rx) * (2 * ry);
 }
-function estimateCapPerPara(paragraphCount: number) {
+function estimateCapPerPara(paragraphCount: number, CANVAS_W: number, CANVAS_H: number) {
   const budget = SLACK * CANVAS_W * CANVAS_H;
   let lo = 0, hi = 2000;
   while (lo < hi) {
@@ -33,7 +32,7 @@ function estimateCapPerPara(paragraphCount: number) {
   return lo;
 }
 
-function preflightBoundFromRawText(raw: string) {
+function preflightBoundFromRawText(raw: string, CANVAS_W: number, CANVAS_H: number) {
   const all = raw
     .split(/\n{2,}/)
     .map(p => p.replace(/\s+/g, ' ').trim())
@@ -44,7 +43,7 @@ function preflightBoundFromRawText(raw: string) {
   const paras = all.slice(0, MAX_PARAS);
 
   const budget = SLACK * CANVAS_W * CANVAS_H;
-  const uniformCap = paras.length ? estimateCapPerPara(paras.length) : 0;
+  const uniformCap = paras.length ? estimateCapPerPara(paras.length, CANVAS_W, CANVAS_H) : 0;
 
   const split = paras.map(p => p.split(' ').filter(Boolean));
   const capped = split.map(t => t.slice(0, uniformCap));
@@ -94,10 +93,11 @@ export default function TextEditModal({
 }: {
   isOpen: boolean;
   onClose: () => void;
-  onSave: (text: string, header: string) => void;
+  onSave: (text: string, header: string, canvasOption: CanvasOption) => void;
 }) {
   const [text, setText] = useState<string>(lookingGlass.text);
   const [header, setHeader] = useState<string>(lookingGlass.header);
+  const [canvasSetting, setCanvasSetting] = useState<CanvasOption>(CANVAS_OPTIONS[0])
 
   function handleExampleClick(example: { text: string; header: string }) {
     setText(example.text);
@@ -105,112 +105,143 @@ export default function TextEditModal({
   }
 
   function handleSave() {
-    const { boundedText, trimmedWords, removedParas, ok } = preflightBoundFromRawText(text);
+    const { boundedText, trimmedWords, removedParas, ok } = preflightBoundFromRawText(text, canvasSetting.W, canvasSetting.H);
 
     const parts: string[] = [];
     if (removedParas > 0) parts.push(`Removed ${removedParas} extra paragraph${removedParas === 1 ? '' : 's'} (max ${MAX_PARAS}).`);
     if (trimmedWords > 0) parts.push(`Trimmed ${trimmedWords} word${trimmedWords === 1 ? '' : 's'} to fit 2000×2800.`);
     if (!ok) parts.push('Reached minimum paragraph size.');
 
-    onSave(boundedText, header);
+    onSave(boundedText, header, canvasSetting);
     onClose();
+  }
+
+  function handleSettingChange(option: CanvasOption) {
+    setCanvasSetting(option);
   }
 
   if (!isOpen) return null;
 
-return (
-  <div className="fixed inset-0 z-50 flex items-center justify-center"
-       style={{ background: 'rgba(0,0,0,0.72)', backdropFilter: 'blur(6px)' }}>
-    <div
-      className="w-11/12 max-w-3xl max-h-[80vh] px-6 py-5 overflow-y-auto rounded-2xl shadow-2xl"
-      style={{
-        background: INK,
-        border: `1px solid ${VEIL}`,
-        boxShadow: '0 20px 60px rgba(0,0,0,0.55)',
-      }}
-    >
-        {/* header */}
-        <h2
-          className="mb-4 text-[13px] tracking-[0.22em] uppercase select-none"
-          style={{ color: 'rgba(255,255,255,0.66)' }}
-        >
-          Edit Passage
-        </h2>
-
-        {/* header input */}
-        <input
-          type="text"
-          placeholder="Header"
-          value={header}
-          onChange={(e) => setHeader(e.target.value)}
-          className="w-full mb-3 bg-transparent outline-none"
-          style={{
-            background: `linear-gradient(to bottom, transparent, ${VEIL})`,
-            color: 'rgba(255,255,255,0.90)',
-            fontSize: 16,
-          }}
-        />
-
-        {/* body textarea */}
-        <textarea
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          placeholder="Paste or type your text…"
-          className="w-full h-48 mb-4 outline-none resize-vertical"
-          style={{
-            background: VEIL,
-            color: 'rgba(255,255,255,0.88)',
-            padding: 12,
-            lineHeight: 1.55,
-            fontSize: 15,
-          }}
-        />
-
-        {/* examples row */}
-        <div className="flex flex-wrap gap-2 mb-4">
-          <button
-            onClick={() => handleExampleClick(lookingGlass)}
-            style={{
-              border: `1px solid ${VEIL}`,
-              color: 'rgba(255,255,255,0.78)',
-            }}
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center"
+        style={{ background: 'rgba(0,0,0,0.72)', backdropFilter: 'blur(6px)' }}>
+      <div
+        className="w-11/12 max-w-3xl max-h-[80vh] px-6 py-5 overflow-y-auto rounded-2xl shadow-2xl"
+        style={{
+          background: INK,
+          border: `1px solid ${VEIL}`,
+          boxShadow: '0 20px 60px rgba(0,0,0,0.55)',
+        }}
+      >
+          {/* header */}
+          <h2
+            className="mb-4 text-[13px] tracking-[0.22em] uppercase select-none"
+            style={{ color: 'rgba(255,255,255,0.66)' }}
           >
-            Through the Looking-Glass
-          </button>
-          <button
-            onClick={() => handleExampleClick(littlePrince)}
+            Edit Passage
+          </h2>
+
+          {/* header input */}
+          <input
+            type="text"
+            placeholder="Header"
+            value={header}
+            onChange={(e) => setHeader(e.target.value)}
+            className="w-full mb-3 bg-transparent outline-none"
             style={{
-              border: `1px solid ${VEIL}`,
-              color: 'rgba(255,255,255,0.78)',
+              background: `linear-gradient(to bottom, transparent, ${VEIL})`,
+              color: 'rgba(255,255,255,0.90)',
+              fontSize: 16,
             }}
-          >
-            The Little Prince
-          </button>
+          />
+
+          {/* body textarea */}
+          <textarea
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            placeholder="Paste or type your text…"
+            className="w-full h-48 mb-4 outline-none resize-vertical"
+            style={{
+              background: VEIL,
+              color: 'rgba(255,255,255,0.88)',
+              padding: 12,
+              lineHeight: 1.55,
+              fontSize: 15,
+            }}
+          />
+
+          {/* examples row */}
+          <div className="flex flex-wrap gap-2 mb-4">
+            <button
+              onClick={() => handleExampleClick(lookingGlass)}
+              style={{
+                border: `1px solid ${VEIL}`,
+                color: 'rgba(255,255,255,0.78)',
+              }}
+            >
+              Through the Looking-Glass
+            </button>
+            <button
+              onClick={() => handleExampleClick(littlePrince)}
+              style={{
+                border: `1px solid ${VEIL}`,
+                color: 'rgba(255,255,255,0.78)',
+              }}
+            >
+              The Little Prince
+            </button>
+          </div>
+
+          {/* canvas settings */}
+          <div className='w-full flex flex-col gap-1'>
+            <h2
+              className="mb-4 text-[13px] tracking-[0.22em] uppercase select-none"
+              style={{ color: 'rgba(255,255,255,0.66)' }}
+            >
+              Canvas Options
+            </h2>
+            <div className='w-full flex flex-row gap-2'>
+              {
+                CANVAS_OPTIONS.map((option) => 
+                  <button
+                    key={option.name}
+                    style={{
+                      border: `1px solid ${VEIL}`,
+                      background: (option == canvasSetting ? 'linear-gradient(180deg, rgba(255,255,255,0.06), rgba(255,255,255,0.03))' : 'transparent'),
+                      color: (option == canvasSetting ? "white" : 'rgba(255,255,255,0.78)'),
+                    }}
+                    onClick={() => handleSettingChange(option)}
+                  >
+                    {option.name}
+                  </button>
+                )
+              }
+            </div>
+          </div>
+
+          {/* actions */}
+          <div className="flex justify-end gap-2 pt-1">
+            <button
+              onClick={onClose}
+              style={{
+                border: `1px solid ${VEIL}`,
+                color: 'rgba(255,255,255,0.72)',
+              }}
+            >
+              Cancel
+            </button>
+            <button
+              onClick={handleSave}
+              style={{
+                border: `1px solid ${VEIL}`,
+                background: 'linear-gradient(180deg, rgba(255,255,255,0.06), rgba(255,255,255,0.03))',
+                color: 'rgba(255,255,255,0.92)',
+              }}
+            >
+              Save
+            </button>
         </div>
-
-        {/* actions */}
-        <div className="flex justify-end gap-2 pt-1">
-          <button
-            onClick={onClose}
-            style={{
-              border: `1px solid ${VEIL}`,
-              color: 'rgba(255,255,255,0.72)',
-            }}
-          >
-            Cancel
-          </button>
-          <button
-            onClick={handleSave}
-            style={{
-              border: `1px solid ${VEIL}`,
-              background: 'linear-gradient(180deg, rgba(255,255,255,0.06), rgba(255,255,255,0.03))',
-              color: 'rgba(255,255,255,0.92)',
-            }}
-          >
-            Save
-          </button>
       </div>
     </div>
-  </div>
-);
+  );
 }
