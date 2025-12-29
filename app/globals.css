@@ -5,6 +5,18 @@
   --background: #171717;
 }
 
+* {
+  scrollbar-color: #ffffff50 transparent;
+  scrollbar-width: thin;
+}
+
+html, body {
+  width: 100%;
+  min-height: 100svh;
+  margin: 0;
+  overflow: hidden;
+}
+
 body {
   background: var(--background);
   color: var(--foreground);
@@ -12,7 +24,52 @@ body {
   font-weight: 500
 }
 
+h3 {
+  font-size: 1em;
+}
+
+textarea, input {
+  font-family: Newsreader, Helvetica, sans-serif;
+  background: url('/noisy.png');
+  background-size: 100px 100px;
+  background-repeat: repeat;
+  padding: 4px;
+  color: #ffffffbb;
+}
+
+button {
+  background: #ffffff10;
+  border-radius: 3px;
+  border: 0.5px solid #ffffff50;
+  transition: all 0.2s ease-in-out;
+}
+
 button:hover {
   cursor: pointer;
   opacity: 0.8;
+  border: 0.5px solid #ffffff50;
+}
+
+.no-format {
+  background: transparent;
+  border: none;
+  transition: all 0.2s ease-in-out;
+}
+
+.no-format:hover {
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  opacity: 0.8;
+}
+
+.pill {
+  background: transparent;
+}
+
+.is-active {
+  background: url('/noisy.png');
+  background-size: 100px 100px;
+  background-repeat: repeat;
+  color: #ffffffbb;
 }
