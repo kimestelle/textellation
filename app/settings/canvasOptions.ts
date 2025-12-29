@@ -2,6 +2,8 @@ export type CanvasOption = {
     name: string;
     description: string;
 
+    maxParas: number;
+
     W: number;
     H: number;
 
@@ -21,7 +23,10 @@ export type CanvasOption = {
 
 const largePoster: CanvasOption = {
     name: "Large Poster",
-    description: "A large poster size (24x36 inches at 150 DPI) suitable for printing.",
+    description: "for hi-res print",
+
+    maxParas: 9,
+
     W: 2000,
     H: 2800,
     MARGIN: 20,
@@ -37,23 +42,29 @@ const largePoster: CanvasOption = {
 
 const smallCard: CanvasOption = {
     name: "Small Card",
-    description: "A small card size (5x7 inches at 150 DPI) suitable for postcards or greeting cards.",
-    W: 750,
-    H: 950,
+    description: "send to loved ones",
+
+    maxParas: 3,
+
+    W: 800,
+    H: 1100,
     MARGIN: 10,
     GRID_SIZE: 15,
     BG_SIDE_MARGIN: 10,
     BG_TOP_MARGIN: 80,
     BG_BOTTOM_MARGIN: 40,
-    WORD_SIZE: 20,
+    WORD_SIZE: 16,
     HEADER_SIZE: 24,
     showTitle: true,
     showText: false
 };
 
 const phoneWallpaper: CanvasOption = {
-    name: "Phone Wallpaper",
-    description: "A standard phone wallpaper size (1080x1920 pixels) suitable for most smartphones.",
+    name: "Wallpaper",
+    description: "fits most smartphones",
+
+    maxParas: 3,
+
     W: 1080,
     H: 1920,
     MARGIN: 20,
@@ -69,9 +80,12 @@ const phoneWallpaper: CanvasOption = {
 
 const smallSquare: CanvasOption = {
     name: "Small Square",
-    description: "A small square size (1080x1080 pixels) suitable for social media posts.",
-    W: 1080,
-    H: 1080,
+    description: "e-cards or social posts",
+
+    maxParas: 3,
+
+    W: 1200,
+    H: 1200,
     MARGIN: 15,
     GRID_SIZE: 15,
     BG_SIDE_MARGIN: 20,
@@ -83,9 +97,29 @@ const smallSquare: CanvasOption = {
     showText: false
 };
 
+const tinySquare: CanvasOption = {
+    name: "Tiny Strip",
+    description: "small keepsakes",
+
+    maxParas: 4,
+
+    W: 1300,
+    H: 540,
+    MARGIN: 15,
+    GRID_SIZE: 15,
+    BG_SIDE_MARGIN: 10,
+    BG_TOP_MARGIN: 70,
+    BG_BOTTOM_MARGIN: 20,
+    HEADER_SIZE: 24,
+    WORD_SIZE: 12,
+    showTitle: true,
+    showText: false
+};
+
 export const CANVAS_OPTIONS: CanvasOption[] = [
     largePoster,
     smallCard,
     phoneWallpaper,
     smallSquare,
+    tinySquare
 ];

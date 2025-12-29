@@ -1,4 +1,7 @@
 type Size = { rx: number; ry: number };
+const BASE_WORD_SIZE = 24;
+
+export type Ellipse = { x: number; y: number; rx: number; ry: number };
 
 function scaleSizes(sizes: Size[], k: number): Size[] {
   return sizes.map(s => ({ rx: s.rx * k, ry: s.ry * k }));
@@ -12,65 +15,55 @@ function sumRectArea(sizes: Size[]) {
 export function tightPack(
   W: number,
   H: number,
+  WORD_SIZE: number,
   baseSizes: Size[],
   packOpts = { gridStep: 20, areaSlack: 0.78, orderBias: 0.25, edgeBias: 0.08 },
   kMinReadability = 0.55,
   iter = 18,
-  overshootGrow = 1.002 
+  overshootGrow = 1.002
 ): { placement: Ellipse[]; k: number } | "FAIL" {
   if (!baseSizes.length) return "FAIL";
 
+  const kWord = WORD_SIZE / BASE_WORD_SIZE;
   const budget = (packOpts.areaSlack ?? 0.78) * W * H;
-  const area0  = sumRectArea(baseSizes);
 
-  // Start with an area-based guess
+  // area scales with k^2
+  const area0 = sumRectArea(baseSizes) * (kWord * kWord);
+
+  // search kPack in [kMinReadability, 1]
   const kHi = 1;
-  let kLo = Math.min(kHi, Math.sqrt(budget / Math.max(1, area0))); // <= 1
-  // Respect readability floor
+  let kLo = Math.min(kHi, Math.sqrt(budget / Math.max(1, area0)));
   kLo = Math.max(kLo, kMinReadability);
 
-  // If even kHi works, we’ll push toward 1 in the search anyway
+  const scaled = (kPack: number) => scaleSizes(baseSizes, kWord * kPack);
+
   let bestK = kLo;
   let bestPlacement: Ellipse[] | null = null;
 
-  // Ensure we have a feasible starting point
-  const tryLo = placeEllipsesRectPacked(W, H, scaleSizes(baseSizes, kLo), packOpts);
-  if (tryLo === "TOO_LARGE") {
-    // Not placeable even at the floor
-    return "FAIL";
-  }
-  bestK = kLo;
+  const tryLo = placeEllipsesRectPacked(W, H, scaled(kLo), packOpts);
+  if (tryLo === "TOO_LARGE") return "FAIL";
   bestPlacement = tryLo;
 
-  // If 1 fits, clamp to 1 early
-  const tryHi = placeEllipsesRectPacked(W, H, scaleSizes(baseSizes, kHi), packOpts);
+  const tryHi = placeEllipsesRectPacked(W, H, scaled(kHi), packOpts);
   if (tryHi !== "TOO_LARGE") {
     bestK = kHi;
     bestPlacement = tryHi;
   }
 
-  // Binary search for the tightest feasible k
-  let lo = bestK;                   // feasible
-  let hi = tryHi === "TOO_LARGE" ? kHi : 1; // infeasible or 1
+  let lo = bestK;
+  let hi = tryHi === "TOO_LARGE" ? kHi : 1;
+
   for (let i = 0; i < iter; i++) {
     const mid = (lo + hi) / 2;
-    const attempt = placeEllipsesRectPacked(W, H, scaleSizes(baseSizes, mid), packOpts);
-    if (attempt === "TOO_LARGE") {
-      hi = mid;
-    } else {
-      lo = mid;
-      bestK = mid;
-      bestPlacement = attempt;
-    }
+    const attempt = placeEllipsesRectPacked(W, H, scaled(mid), packOpts);
+    if (attempt === "TOO_LARGE") hi = mid;
+    else { lo = mid; bestK = mid; bestPlacement = attempt; }
   }
 
-  // Tiny overshoot to make it “tight”
-  const kTight = Math.min(1, bestK * overshootGrow);
-  const finalTry = placeEllipsesRectPacked(W, H, scaleSizes(baseSizes, kTight), packOpts);
-  if (finalTry !== "TOO_LARGE") {
-    return { placement: finalTry, k: kTight };
-  }
-  // Fallback to best found
+  const kTight = bestK * overshootGrow;
+  const finalTry = placeEllipsesRectPacked(W, H, scaled(kTight), packOpts);
+  if (finalTry !== "TOO_LARGE") return { placement: finalTry, k: kTight };
+
   return { placement: bestPlacement!, k: bestK };
 }
 
@@ -89,8 +82,6 @@ export function ellipseSizeFromWords(
   const ry = 1.0 * s;
   return { rx, ry };
 }
-
-export type Ellipse = { x: number; y: number; rx: number; ry: number };
 
 export function placeEllipsesRectPacked(
   W: number,

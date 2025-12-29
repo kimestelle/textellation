@@ -1,14 +1,14 @@
 import { Ellipse } from "./paragraphHelpers";
-const BLUE_HEX = '#272757';
-const DEEPBLUEGREEN_HEX = '#121c2dff';
-const REDGREEN_HEX = '#ffffff20';
+export const BLUE_HEX = '#272757';
+export const DEEPBLUEGREEN_HEX = '#121c2dff';
+export const REDGREEN_HEX = '#ffffff20';
 
 const romanNumerals = [
   'I.', 'II.', 'III.', 'IV.', 'V.', 'VI.', 'VII.', 'VIII.', 'IX.', 'X.',
   'XI.', 'XII.', 'XIII.', 'XIV.', 'XV.', 'XVI.', 'XVII.', 'XVIII.', 'XIX.', 'XX.'
 ];
 
-const asciiStars = ['*', '✶', '✴', '🟅', '.'];
+export const asciiStars = ['*', '✶', '✴', '🟅', '.'];
 
 export type ColumnTextOpts = {
   x: number;
@@ -182,7 +182,6 @@ export function drawBackgroundGrid(
     ctx.lineTo(gx1, y);
     ctx.stroke();
   }
-  // ctx.strokeStyle = 'white';
   ctx.lineWidth = 2;
   //draw outer border thicker
   ctx.strokeRect(gx0, gy0, W - (border * 2), H - (border * 2));
@@ -264,10 +263,10 @@ export function drawWrappedColumns(
   const footerY = y + height - lineH * 3.65;
   cursorX = x + (columns - 1) * (colW + columnGap);
   ctx.font = `bold italic ${fontPx}px newsreader, serif`;
-  ctx.fillText("textellations", cursorX + 190, footerY);
+  ctx.fillText("textellation.com", cursorX + 150, footerY);
   //made by in regular letters
   ctx.font = `${fontPx}px newsreader, serif`;
-  ctx.fillText("crafted wth love - estelle kim", cursorX + 30, footerY + lineH);
+  ctx.fillText("crafted wth love", cursorX + 165, footerY + lineH);
   //current date in regular letters, place with end of string in 100 + curzorX
   const date = new Date();
   const dateStr = date.toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' });
@@ -353,7 +352,7 @@ export function drawAsciiParticles(
   opts: {
     density?: number;          // particles per pixel
     sizePx?: number;           // font size
-    noiseScale?: number;       // world→noise scale (smaller = larger features)
+    noiseScale?: number;       // world to noise scale (smaller = larger features)
     noiseOctaves?: number;     // fBM octaves
     seed?: number;             // deterministic seed
     avoid?: Ellipse[];         // ellipses to bias away from
