@@ -283,7 +283,7 @@ export default function TextEditModal({ onSave, onDownload }: TextEditModalProps
           const active = option === canvasSetting;
           return (
             <div
-              key={option.name} type="button"
+              key={option.name}
               className={[
                 active ? 'is-active' : '',
                 'relative flex flex-col w-24 h-24 justify-center items-center text-center cursor-pointer',
