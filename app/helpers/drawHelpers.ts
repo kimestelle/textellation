@@ -8,7 +8,7 @@ const romanNumerals = [
   'XI.', 'XII.', 'XIII.', 'XIV.', 'XV.', 'XVI.', 'XVII.', 'XVIII.', 'XIX.', 'XX.'
 ];
 
-export const asciiStars = ['*', '✶', '✴', '✦', '.'];
+export const asciiStars = ['*', '✶', "\uE000", '✦', '.'];
 
 export type ColumnTextOpts = {
   x: number;
