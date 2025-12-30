@@ -44,13 +44,13 @@ export default function CanvasOptionPreview({
           }}
         />
 
-        {/* header indicator (lives in top margin band) */}
+        {/* header indicator */}
         {option.showTitle && (
           <div
             className="absolute"
             style={{
               left: `${leftPct}%`,
-              top: `${(topPct * 0.35)}%`, // sits in the top margin area
+              top: `${(topPct * 0.35)}%`,
               width: `${innerWPct * 0.55}%`,
               height: `6%`,
               background: "rgba(255,255,255,0.22)",
@@ -58,7 +58,7 @@ export default function CanvasOptionPreview({
           />
         )}
 
-        {/* text block indicator (lives in bottom margin band) */}
+        {/* text block indicator */}
         {option.showText && (
           <div
             className="absolute"

@@ -78,7 +78,7 @@ export default function DrawCanvas({
     };
   }, [BG_WIDTH, BG_HEIGHT]);
 
-  //zoom in on mouse hover
+  //zoom in on mouse hover or touch drag
   useEffect(() => {
     const wrapperEl = wrapperRef.current;
     const zoomEl = zoomRef.current;
@@ -145,10 +145,34 @@ export default function DrawCanvas({
       zoomEl.style.transform = `translate(0px, 0px) scale(1)`;
     };
 
+    const onTouchMove = (e: TouchEvent) => {
+      hovering = true;
+      lastX = e.touches[0].clientX;
+      lastY = e.touches[0].clientY;
+      if (!raf) raf = requestAnimationFrame(apply);
+    };
+
+    const onTouchEnd = () => {
+      hovering = false;
+      if (raf) cancelAnimationFrame(raf);
+      raf = 0;
+
+      // reset
+      zoomEl.style.transformOrigin = 'top left';
+      zoomEl.style.transform = `translate(0px, 0px) scale(1)`;
+    };
+
+    wrapperEl.addEventListener('touchmove', onTouchMove, { passive: true });
+    wrapperEl.addEventListener('touchend', onTouchEnd);
+    wrapperEl.addEventListener('touchcancel', onTouchEnd);
+
     wrapperEl.addEventListener('mousemove', onMove);
     wrapperEl.addEventListener('mouseleave', onLeave);
 
     return () => {
+      wrapperEl.removeEventListener('touchmove', onTouchMove);
+      wrapperEl.removeEventListener('touchend', onTouchEnd);
+      wrapperEl.removeEventListener('touchcancel', onTouchEnd);
       wrapperEl.removeEventListener('mousemove', onMove);
       wrapperEl.removeEventListener('mouseleave', onLeave);
       if (raf) cancelAnimationFrame(raf);

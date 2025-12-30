@@ -69,7 +69,7 @@ export default function Home() {
             className="flex flex-col items-start text-left"
             onClick={() => setInfoOpen(true)}
         >
-            textellation_.*🟅
+            textellation_.*&#x2726;
             <span className="hidden md:block text-neutral-400">
             make typographic constellations
             </span>

@@ -155,9 +155,10 @@ export default function TextEditModal({ onSave, onDownload }: TextEditModalProps
   }
 
   function generateStarPattern(length: number): string {
+    const L = Math.max(0, Math.min(length, 100));
     let pattern = '';
     const asciiStarsWithMore = asciiStars.concat(['-', '·', ' ', '_', '-', '·', ' ', '_']);
-    for (let i = 0; i < length; i++) {
+    for (let i = 0; i < L; i++) {
       const star = asciiStarsWithMore[Math.floor(Math.random() * asciiStarsWithMore.length)];
       pattern += star;
     }
