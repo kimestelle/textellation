@@ -1,4 +1,3 @@
-// DrawCanvas.tsx
 'use client';
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
@@ -270,7 +269,7 @@ export default function DrawCanvas({
       ry: e.ry,
     }));
 
-    // --- background ---
+    // background
     bgctx.clearRect(0, 0, bg.width, bg.height);
     bgctx.fillStyle = 'white';
     bgctx.fillRect(0, 0, bg.width, bg.height);

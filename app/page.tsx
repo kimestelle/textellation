@@ -20,7 +20,7 @@ export default function Home() {
   const [passageHeader, setPassageHeader] = useState<string>(littlePrince.header);
   const [canvasOption, setCanvasOption] = useState<CanvasOption>(CANVAS_OPTIONS[0]);
 
-  const [infoOpen, setInfoOpen] = useState<boolean>(false);
+  const [infoOpen, setInfoOpen] = useState<boolean>(true);
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const bgRef = useRef<HTMLCanvasElement | null>(null);

@@ -1,59 +1,99 @@
+import { useEffect, useRef } from "react";
+import { generateStarPattern } from "../helpers/drawHelpers";
 type InfoModalProps = {
     isOpen: boolean;
     closeModule: () => void; 
 };
 
 export default function InfoModal({ isOpen, closeModule }: InfoModalProps) {
-  const INK  = '#0B0F16';
-  const VEIL = '#ffffff20';
+    const starContainerRef = useRef<HTMLSpanElement | null>(null);
+
+    useEffect(() => {
+      if (!isOpen) return;
+      const el = starContainerRef.current;
+      if (!el) return;
+
+      // make a hidden probe that matches the star span's font styles
+      const probe = document.createElement("span");
+      probe.style.position = "absolute";
+      probe.style.visibility = "hidden";
+      probe.style.whiteSpace = "pre";
+      probe.style.pointerEvents = "none";
+
+      // inherit font from the container
+      const cs = getComputedStyle(el);
+      probe.style.font = cs.font;
+      probe.style.letterSpacing = cs.letterSpacing;
+      probe.style.textTransform = cs.textTransform;
+
+      // measure an average character width
+      probe.textContent = "................................................";
+      document.body.appendChild(probe);
+
+      const getCharW = () => probe.getBoundingClientRect().width / 48;
+
+      const updateStars = () => {
+        const width = el.clientWidth;
+        const charW = Math.max(1, getCharW());
+        const charCount = Math.ceil(width / charW) + 2;
+        el.textContent = generateStarPattern(charCount);
+      };
+
+      updateStars();
+      const ro = new ResizeObserver(updateStars);
+      ro.observe(el);
+
+      window.addEventListener("resize", updateStars);
+
+      return () => {
+        ro.disconnect();
+        window.removeEventListener("resize", updateStars);
+        probe.remove();
+      };
+    }, [isOpen]);
 
   if (!isOpen) return null;
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center"
-       style={{ background: 'rgba(0,0,0,0.72)', backdropFilter: 'blur(6px)' }}>
-        <div
-        className="flex flex-col w-11/12 max-w-3xl max-h-[80vh] px-6 py-5 overflow-y-auto rounded-2xl shadow-2xl"
-        style={{
-            background: INK,
-            border: `1px solid ${VEIL}`,
-            boxShadow: '0 20px 60px rgba(0,0,0,0.55)',
-        }}
-        >
-      <button
-        className="self-end mb-3"
-        style={{
-          background: 'rgba(0,0,0,0.35)',
-          border: `1px solid ${VEIL}`,
-          color: 'rgba(255,255,255,0.80)',
-        }}
-        onClick={closeModule}
-      >
-        Close
-      </button>
+    <div 
+    onClick={closeModule}
+    className="cursor-pointer fixed inset-0 z-50 flex items-center justify-center"
+       style={{ background: 'rgba(0,0,0,0.8)', backdropFilter: 'blur(10px)' }}>
+        <div className="flex flex-col w-11/12 max-w-3xl max-h-[80vh] px-6 py-5 overflow-y-auto">
+        <div className='flex flex-row w-full mb-3'>
+          <h3>
+            textellation_.*&#x2726;
+          </h3>
+            <span
+              ref={starContainerRef}
+              className="text-neutral-500 min-w-0 grow overflow-hidden whitespace-nowrap"
+              style={{ textOverflow: "clip" }}
+              suppressHydrationWarning={true}
+            >
+              {generateStarPattern(200)}
+            </span>
+          {/* <button
+            className="no-format shrink-0"
+            onClick={closeModule}
+          >
+            {'<close>'}
+          </button> */}
+        </div>
 
-      <h2
-        id="info-title"
-        className="mb-2 text-[13px] uppercase tracking-[0.22em] select-none"
-        style={{ color: 'rgba(255,255,255,0.66)' }}
-      >
-        textellation
-      </h2>
       <p className="mb-2">this is a typographic constellation maker. map words like stars!</p>
-      <p className="mb-4">
+      <p className="mb-4 text-neutral-400">
         made with <span aria-hidden>❤</span> by{' '}
         <a
           href="https://www.estellekimdev.com/"
           target="_blank"
           rel="noreferrer"
           className="underline"
-          style={{ color: '#ffffff80' }}
         >
           estelle kim
         </a>
       </p>
 
       <p className="mt-2 mb-2 font-semibold">* how to use *</p>
-      <ul className="mb-4 list-disc list-inside text-[15px] leading-relaxed">
+      <ul className="text-neutral-400 mb-4 list-disc list-inside text-[15px] leading-relaxed">
         <li>
           <span className="underline">paste your passage</span> and add a short header.
         </li>
@@ -63,7 +103,7 @@ export default function InfoModal({ isOpen, closeModule }: InfoModalProps) {
       </ul>
 
       <p className="mt-2 mb-2 font-semibold">* how it works *</p>
-      <ol className="mb-4 list-decimal list-inside text-[15px] leading-relaxed">
+      <ol className="text-neutral-400 mb-4 list-decimal list-inside text-[15px] leading-relaxed">
         <li>
           we count words per paragraph and compute an ellipse size (3:2 ratio) using a mixed linear/area
           model.
@@ -84,9 +124,8 @@ export default function InfoModal({ isOpen, closeModule }: InfoModalProps) {
 
       <div
         className="mt-auto pt-3 text-[12.5px]"
-        style={{ borderTop: `1px solid ${VEIL}`, color: 'rgba(255,255,255,0.65)' }}
       >
-        <span className="uppercase tracking-[0.18em]">v0.1</span>
+        <span className="uppercase tracking-[0.18em]">v1.1</span>
       </div>
     </div>
     </div>

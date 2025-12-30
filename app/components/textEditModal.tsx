@@ -3,7 +3,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { littlePrince, lookingGlass } from '../settings/examples';
 import { CANVAS_OPTIONS, CanvasOption } from '../settings/canvasOptions';
-import { asciiStars } from '../helpers/drawHelpers';
+import { generateStarPattern } from '../helpers/drawHelpers';
 
 import CanvasOptionPreview from './CanvasOptionPreview';
 
@@ -140,6 +140,12 @@ export default function TextEditModal({ onSave, onDownload }: TextEditModalProps
       canvasSetting.H
     );
 
+    //if no title or text, return 
+    if (!boundedText.trim() || !header.trim()) {
+      setNote('please fill the header and text!');
+      return;
+    }
+
     const parts: string[] = [];
     if (removedParas > 0) parts.push(`Removed ${removedParas} extra paragraph${removedParas === 1 ? '' : 's'} (max ${MAX_PARAS}).`);
     if (trimmedWords > 0) parts.push(`Trimmed ${trimmedWords} word${trimmedWords === 1 ? '' : 's'} to fit ${canvasSetting.W}×${canvasSetting.H}.`);
@@ -154,15 +160,16 @@ export default function TextEditModal({ onSave, onDownload }: TextEditModalProps
     if (onDownload) onDownload();
   }
 
-  function generateStarPattern(length: number): string {
-    const L = Math.max(0, Math.min(length, 100));
-    let pattern = '';
-    const asciiStarsWithMore = asciiStars.concat(['-', '·', ' ', '_', '-', '·', ' ', '_']);
-    for (let i = 0; i < L; i++) {
-      const star = asciiStarsWithMore[Math.floor(Math.random() * asciiStarsWithMore.length)];
-      pattern += star;
-    }
-    return pattern;
+  function handleChangeOptions(option: CanvasOption) {
+    setCanvasSetting(option);
+    //cut text to fit max number of paragraphs
+    const all = text
+      .split(/\n{2,}/)
+      .map(p => p.replace(/\s+/g, ' ').trim())
+      .filter(Boolean);
+
+    const paras = all.slice(0, option.maxParas);
+    setText(paras.join('\n\n'));
   }
 
   //generate random stars whenever ref changes width
@@ -289,7 +296,7 @@ export default function TextEditModal({ onSave, onDownload }: TextEditModalProps
                 active ? 'is-active' : '',
                 'relative flex flex-col w-24 h-24 justify-center items-center text-center cursor-pointer',
               ].join(' ')}
-              onClick={() => setCanvasSetting(option)}
+              onClick={() => handleChangeOptions(option)}
               onMouseEnter={() => setHoveredOption(option)}
               onMouseLeave={() => setHoveredOption(null)}
               onFocus={() => setHoveredOption(option)}

@@ -28,11 +28,22 @@ export type ColumnTextOpts = {
 export function punctToASCIIStar(punct: string): string {
   if (punct === ",") return "**";
   if (punct === ".") return "✶";
-  if (punct === "!") return "✴";
+  if (punct === "!") return "\uE000";
   if (punct === "?") return "🟅";
   if (punct === ";") return "***";
   if (punct === ":") return "****";
   return punct;
+}
+
+export function generateStarPattern(length: number): string {
+  const L = Math.max(0, Math.min(length, 200));
+  let pattern = '';
+  const asciiStarsWithMore = asciiStars.concat(['-', '·', ' ', '_', '-', '·', ' ', '_']);
+  for (let i = 0; i < L; i++) {
+    const star = asciiStarsWithMore[Math.floor(Math.random() * asciiStarsWithMore.length)];
+    pattern += star;
+  }
+  return pattern;
 }
 
 export function drawRadialGraph(
@@ -401,7 +412,7 @@ export function drawAsciiParticles(
     const ba = p[X + 1 + p[Y]], bb = p[X + 1 + p[Y + 1]];
     const x1 = lerp(grad(aa, xf, yf), grad(ba, xf - 1, yf), u);
     const x2 = lerp(grad(ab, xf, yf - 1), grad(bb, xf - 1, yf - 1), u);
-    return lerp(x1, x2, v); // roughly [-1,1]
+    return lerp(x1, x2, v); // [-1,1]
   }
   function fbm(ax: number, ay: number, oct = 3) {
     let a = 0, amp = 0.5, freq = 1.0;
@@ -414,7 +425,7 @@ export function drawAsciiParticles(
     return a * 0.5 + 0.5;
   }
 
-  // --- ellipse avoidance field (smooth distance falloff) ---
+  // weight to avoid ellipses
   function avoidWeight(px: number, py: number) {
     if (!avoid.length) return 1.0;
     let w = 1.0;
@@ -422,7 +433,7 @@ export function drawAsciiParticles(
       const dx = (px - e.x) / (e.rx + 1e-6);
       const dy = (py - e.y) / (e.ry + 1e-6);
       const d2 = dx * dx + dy * dy; // <1 inside
-      // smoothstep-ish: inside → suppress; near edge → attenuate
+      // smoothstep-like
       const k = d2 < 1
         ? Math.max(0, 1 - Math.pow(1 - d2, 2) * avoidStrength) // strongly push out inside
         : 1 / (1 + Math.max(0, (1 / Math.sqrt(d2) - 1)) * 0.0); // ~1 outside
@@ -433,7 +444,7 @@ export function drawAsciiParticles(
 
   const count = Math.floor(W * H * density);
   ctx.save();
-  ctx.font = `${sizePx}px ibm-plex-mono, monospace`;
+  ctx.font = `${sizePx}px "Star Glyphs", ibm-plex-mono, monospace`;
   ctx.fillStyle = "#ffffff70";
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";
