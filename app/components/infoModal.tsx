@@ -80,7 +80,7 @@ export default function InfoModal({ isOpen, closeModule }: InfoModalProps) {
         </div>
 
       <p className="mb-2">this is a typographic constellation maker. map words like stars!</p>
-      <p className="mb-4 text-neutral-400">
+      {/* <p className="mb-4 text-neutral-400">
         made with <span aria-hidden>❤</span> by{' '}
         <a
           href="https://www.estellekimdev.com/"
@@ -90,9 +90,9 @@ export default function InfoModal({ isOpen, closeModule }: InfoModalProps) {
         >
           estelle kim
         </a>
-      </p>
+      </p> */}
 
-      <p className="mt-2 mb-2 font-semibold">* how to use *</p>
+      {/* <p className="mt-2 mb-2 font-semibold">* how to use *</p> */}
       <ul className="text-neutral-400 mb-4 list-disc list-inside text-[15px] leading-relaxed">
         <li>
           <span className="underline">paste your passage</span> and add a short header.
@@ -102,7 +102,7 @@ export default function InfoModal({ isOpen, closeModule }: InfoModalProps) {
         </li>
       </ul>
 
-      <p className="mt-2 mb-2 font-semibold">* how it works *</p>
+      {/* <p className="mt-2 mb-2 font-semibold">* how it works *</p>
       <ol className="text-neutral-400 mb-4 list-decimal list-inside text-[15px] leading-relaxed">
         <li>
           we count words per paragraph and compute an ellipse size (3:2 ratio) using a mixed linear/area
@@ -120,7 +120,7 @@ export default function InfoModal({ isOpen, closeModule }: InfoModalProps) {
           words are placed by a light flow layout + relaxation inside each sentence orbit, preserving
           order and avoiding collisions.
         </li>
-      </ol>
+      </ol> */}
 
       <div
         className="mt-auto pt-3 text-[12.5px]"
