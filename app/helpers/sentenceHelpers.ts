@@ -159,9 +159,17 @@ export function buildParagraphSim(args: {
   parEllipse: EllipsePlacement;
   wordPx: number;
   tokenizeAndBucket: (s: string) => { tokens: string[]; buckets: POSBucket[] };
-  onTick: () => void;
+  random?: () => number;
 }): { nodes: WordNode[]; links: WordLink[]; sim: Simulation<WordNode, undefined> } {
-  const { ctx, sentences, paragraphIndex: p, parEllipse, wordPx, tokenizeAndBucket, onTick } = args;
+  const {
+    ctx,
+    sentences,
+    paragraphIndex: p,
+    parEllipse,
+    wordPx,
+    tokenizeAndBucket,
+    random = Math.random,
+  } = args;
 
   const BASE_WORD = 24;
   const kWord = Math.max(0.5, Math.min(2.0, wordPx / BASE_WORD));
@@ -199,18 +207,27 @@ export function buildParagraphSim(args: {
       const bucket = buckets[w] ?? 'OTHER';
       const punctOnly = bucket === 'PUNC';
 
+      const isFirstInSentence = (w === firstWordIdx);
+      const measurementFont = isFirstInSentence
+        ? fontString({ italic: true, weight: 700, size: wordPx + 4, family: 'Newsreader' })
+        : bucket === 'ADJ'
+          ? fontString({ italic: true, size: wordPx, family: 'Newsreader' })
+          : bucket === 'NOUN'
+            ? fontString({ weight: 600, size: wordPx, family: 'Newsreader' })
+            : fontString({ size: wordPx, family: 'Newsreader' });
+      ctx.font = measurementFont;
       const wPx = Math.ceil(ctx.measureText(raw).width);
       const width = wPx + baseGap;
-      const height = lineH;
-      const r = 0.5 * Math.hypot(width, height) + PAD;
+      const height = isFirstInSentence ? lineH + 4 : lineH;
+      // Collision follows the drawn label's axis-aligned footprint. A
+      // diagonal radius overestimates every word and makes dense fixed
+      // compositions needlessly expensive to settle.
+      const r = Math.max(width * 0.5, height * 0.5) + PAD;
 
-      const x = c.x - c.r + (c.r * 2) * ((w + 1) / (tokens.length + 1)) + (Math.random() * 2 - 1) * JITTER;
-      const y = c.y + (Math.random() * 2 - 1) * JITTER;
+      const x = c.x - c.r + (c.r * 2) * ((w + 1) / (tokens.length + 1)) + (random() * 2 - 1) * JITTER;
+      const y = c.y + (random() * 2 - 1) * JITTER;
 
       const nodeIndex = nodes.length;
-
-      //label first non-punct token in sentence
-      const isFirstInSentence = (w === firstWordIdx);
 
       nodes.push({
         x, y, vx: 0, vy: 0,
@@ -254,6 +271,8 @@ export function buildParagraphSim(args: {
     }
   }
 
+  ctx.font = `${wordPx}px Newsreader`;
+
   const linkForce = forceLink<WordNode, WordLink>(links)
     .strength(d => d.strength ?? 0.08)
     .distance(d => {
@@ -286,19 +305,29 @@ export function buildParagraphSim(args: {
     .force('collide', forceCollide<WordNode>().radius(d => d.r).iterations(2))
     .force('link', linkForce)
     .force('sent', sentForce)
-    .on('tick', () => {
-      for (const n of nodes) {
-        const nx = n.x ?? parEllipse.x;
-        const ny = n.y ?? parEllipse.y;
-        const cl = clampEllipse(nx, ny, parEllipse.x, parEllipse.y, parEllipse.rx, parEllipse.ry, n.r);
-        n.vx = (n.vx ?? 0) + (cl.x - nx) * CLAMP_PUSH;
-        n.vy = (n.vy ?? 0) + (cl.y - ny) * CLAMP_PUSH;
-        n.x = cl.x; n.y = cl.y;
-      }
-      onTick();
-    })
     .alpha(0.9)
-    .alphaDecay(0.03);
+    .alphaDecay(0.03)
+    .stop();
+
+  // Keep containment as a force so manual, bounded tick sequences can share
+  // the same geometry without starting D3's independent timer.
+  sim.force('contain', (alpha: number) => {
+    for (const n of nodes) {
+      const nx = n.x ?? parEllipse.x;
+      const ny = n.y ?? parEllipse.y;
+      const cl = clampEllipse(
+        nx,
+        ny,
+        parEllipse.x,
+        parEllipse.y,
+        parEllipse.rx,
+        parEllipse.ry,
+        n.r,
+      );
+      n.vx = (n.vx ?? 0) + (cl.x - nx) * CLAMP_PUSH * alpha;
+      n.vy = (n.vy ?? 0) + (cl.y - ny) * CLAMP_PUSH * alpha;
+    }
+  });
 
   return { nodes, links, sim };
 }

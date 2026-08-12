@@ -1,4 +1,3 @@
-import { useEffect, useRef } from "react";
 import { generateStarPattern } from "../helpers/drawHelpers";
 type InfoModalProps = {
     isOpen: boolean;
@@ -6,70 +5,23 @@ type InfoModalProps = {
 };
 
 export default function InfoModal({ isOpen, closeModule }: InfoModalProps) {
-    const starContainerRef = useRef<HTMLSpanElement | null>(null);
-
-    useEffect(() => {
-      if (!isOpen) return;
-      const el = starContainerRef.current;
-      if (!el) return;
-
-      // make a hidden probe that matches the star span's font styles
-      const probe = document.createElement("span");
-      probe.style.position = "absolute";
-      probe.style.visibility = "hidden";
-      probe.style.whiteSpace = "pre";
-      probe.style.pointerEvents = "none";
-
-      // inherit font from the container
-      const cs = getComputedStyle(el);
-      probe.style.font = cs.font;
-      probe.style.letterSpacing = cs.letterSpacing;
-      probe.style.textTransform = cs.textTransform;
-
-      // measure an average character width
-      probe.textContent = "................................................";
-      document.body.appendChild(probe);
-
-      const getCharW = () => probe.getBoundingClientRect().width / 48;
-
-      const updateStars = () => {
-        const width = el.clientWidth;
-        const charW = Math.max(1, getCharW());
-        const charCount = Math.ceil(width / charW) + 2;
-        el.textContent = generateStarPattern(charCount);
-      };
-
-      updateStars();
-      const ro = new ResizeObserver(updateStars);
-      ro.observe(el);
-
-      window.addEventListener("resize", updateStars);
-
-      return () => {
-        ro.disconnect();
-        window.removeEventListener("resize", updateStars);
-        probe.remove();
-      };
-    }, [isOpen]);
-
   if (!isOpen) return null;
   return (
     <div 
     onClick={closeModule}
     className="cursor-pointer fixed inset-0 z-50 flex items-center justify-center"
-       style={{ background: 'rgba(0,0,0,0.8)', backdropFilter: 'blur(10px)' }}>
+       style={{ background: 'rgba(0,0,0,0.94)' }}>
         <div className="flex flex-col w-11/12 max-w-3xl max-h-[80vh] px-6 py-5 overflow-y-auto">
         <div className='flex flex-row w-full mb-3'>
           <h3>
             textellation_.*&#x2726;
           </h3>
             <span
-              ref={starContainerRef}
               className="text-neutral-500 min-w-0 grow overflow-hidden whitespace-nowrap"
               style={{ textOverflow: "clip" }}
-              suppressHydrationWarning={true}
+              aria-hidden="true"
             >
-              {generateStarPattern(200)}
+              {generateStarPattern(200, 0x51a7)}
             </span>
           {/* <button
             className="no-format shrink-0"

@@ -1,11 +1,20 @@
 'use client';
 
+import dynamic from 'next/dynamic';
 import { useMemo, useRef, useState, useCallback } from 'react';
-import DrawCanvas from './DrawCanvas';
-import { CANVAS_OPTIONS, CanvasOption } from './settings/canvasOptions';
+import {
+  CANVAS_OPTIONS,
+  CanvasOption,
+  isFixedCanvasOption,
+} from './settings/canvasOptions';
 import TextEditModal from './components/textEditModal';
 import InfoModal from './components/infoModal';
 import { littlePrince } from './settings/examples';
+
+const DrawCanvas = dynamic(() => import('./DrawCanvas'), { ssr: false });
+const InfiniteLiveCanvas = dynamic(() => import('./InfiniteLiveCanvas'), {
+  ssr: false,
+});
 
 function safeFilename(s: string) {
   return s
@@ -21,11 +30,30 @@ export default function Home() {
   const [canvasOption, setCanvasOption] = useState<CanvasOption>(CANVAS_OPTIONS[0]);
 
   const [infoOpen, setInfoOpen] = useState<boolean>(true);
+  const [canvasActivated, setCanvasActivated] = useState<boolean>(false);
+  const [renderReady, setRenderReady] = useState<boolean>(false);
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const bgRef = useRef<HTMLCanvasElement | null>(null);
+  const liveCanvasRef = useRef<HTMLCanvasElement | null>(null);
   
   const exportCanvasHandler = useCallback(async () => {
+    if (!renderReady) return;
+    if (!isFixedCanvasOption(canvasOption)) {
+      const live = liveCanvasRef.current;
+      if (!live) return;
+      live.toBlob((blob) => {
+        if (!blob) return;
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.download = `${safeFilename(passageHeader || 'textellation')}-live-view.png`;
+        link.href = url;
+        link.click();
+        window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+      }, 'image/png');
+      return;
+    }
+
     const fg = canvasRef.current;
     const bg = bgRef.current;
     if (!fg || !bg) return;
@@ -53,9 +81,9 @@ export default function Home() {
       link.href = url;
       link.click();
 
-      URL.revokeObjectURL(url);
+      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
     }, 'image/png');
-  }, [canvasOption, passageHeader]);
+  }, [canvasOption, passageHeader, renderReady]);
 
   const canRender = useMemo(() => {
     return Boolean(passageText && passageHeader && canvasOption);
@@ -92,14 +120,25 @@ export default function Home() {
         <div className="flex flex-col md:flex-row gap-8 w-full h-[calc(100svh-6rem-4rem)]">
             {/* left */}
             <div className="flex-1  min-h-0 flex items-center justify-center">
-            {canRender && (
+            {canvasActivated && canRender && (
+              isFixedCanvasOption(canvasOption) ? (
                 <DrawCanvas
-                passageText={passageText}
-                passageHeader={passageHeader}
-                canvasOption={canvasOption}
-                canvasRef={canvasRef}
-                bgRef={bgRef}
+                  passageText={passageText}
+                  passageHeader={passageHeader}
+                  canvasOption={canvasOption}
+                  canvasRef={canvasRef}
+                  bgRef={bgRef}
+                  onReadyChange={setRenderReady}
                 />
+              ) : (
+                <InfiniteLiveCanvas
+                  passageText={passageText}
+                  passageHeader={passageHeader}
+                  canvasOption={canvasOption}
+                  canvasRef={liveCanvasRef}
+                  onReadyChange={setRenderReady}
+                />
+              )
             )}
             </div>
 
@@ -107,17 +146,27 @@ export default function Home() {
             <div className="flex-1  min-h-0 overflow-auto">
             <TextEditModal
                 onSave={(text, header, option) => {
+                setRenderReady(false);
                 setPassageText(text);
                 setPassageHeader(header);
                 setCanvasOption(option);
                 }}
                 onDownload={exportCanvasHandler}
+                downloadLabel={canvasOption.kind === 'infinite' ? 'download view' : 'download image'}
+                downloadDisabled={!renderReady}
             />
             </div>
         </div>
         </div>
 
-        <InfoModal isOpen={infoOpen} closeModule={() => setInfoOpen(false)} />
+        <InfoModal
+          isOpen={infoOpen}
+          closeModule={() => {
+            setInfoOpen(false);
+            setCanvasActivated(true);
+            setRenderReady(false);
+          }}
+        />
     </div>
     );
 

@@ -25,39 +25,33 @@ export function tightPack(
   if (!baseSizes.length) return "FAIL";
 
   const kWord = WORD_SIZE / BASE_WORD_SIZE;
-  const budget = (packOpts.areaSlack ?? 0.78) * W * H;
-
-  // area scales with k^2
-  const area0 = sumRectArea(baseSizes) * (kWord * kWord);
-
-  // search kPack in [kMinReadability, 1]
-  const kHi = 1;
-  let kLo = Math.min(kHi, Math.sqrt(budget / Math.max(1, area0)));
-  kLo = Math.max(kLo, kMinReadability);
-
   const scaled = (kPack: number) => scaleSizes(baseSizes, kWord * kPack);
 
-  let bestK = kLo;
+  // Always prove the readability floor first. An area-derived starting point
+  // can still fail geometrically even when this smaller scale is valid.
+  let low = kMinReadability;
+  let bestK = low;
   let bestPlacement: Ellipse[] | null = null;
-
-  const tryLo = placeEllipsesRectPacked(W, H, scaled(kLo), packOpts);
+  const tryLo = placeEllipsesRectPacked(W, H, scaled(low), packOpts);
   if (tryLo === "TOO_LARGE") return "FAIL";
   bestPlacement = tryLo;
 
-  const tryHi = placeEllipsesRectPacked(W, H, scaled(kHi), packOpts);
+  const tryHi = placeEllipsesRectPacked(W, H, scaled(1), packOpts);
   if (tryHi !== "TOO_LARGE") {
-    bestK = kHi;
-    bestPlacement = tryHi;
+    return { placement: tryHi, k: 1 };
   }
 
-  let lo = bestK;
-  let hi = tryHi === "TOO_LARGE" ? kHi : 1;
+  let high = 1;
 
   for (let i = 0; i < iter; i++) {
-    const mid = (lo + hi) / 2;
+    const mid = (low + high) / 2;
     const attempt = placeEllipsesRectPacked(W, H, scaled(mid), packOpts);
-    if (attempt === "TOO_LARGE") hi = mid;
-    else { lo = mid; bestK = mid; bestPlacement = attempt; }
+    if (attempt === "TOO_LARGE") high = mid;
+    else {
+      low = mid;
+      bestK = mid;
+      bestPlacement = attempt;
+    }
   }
 
   const kTight = bestK * overshootGrow;
@@ -65,6 +59,102 @@ export function tightPack(
   if (finalTry !== "TOO_LARGE") return { placement: finalTry, k: kTight };
 
   return { placement: bestPlacement!, k: bestK };
+}
+
+function quantizeUp(value: number, step: number) {
+  return Math.ceil(value / step) * step;
+}
+
+/**
+ * Pack at full readable scale and grow the world until all regions fit.
+ * This is for a camera-based surface; the returned extent is never used as a
+ * browser canvas backing-store size.
+ */
+export function growingTightPack(
+  preferredWidth: number,
+  preferredHeight: number,
+  wordSize: number,
+  baseSizes: Size[],
+): { placement: Ellipse[]; k: 1; width: number; height: number } {
+  const wordScale = wordSize / BASE_WORD_SIZE;
+  const sizes = scaleSizes(baseSizes, wordScale);
+  const step = 80;
+  const aspect = preferredWidth / preferredHeight;
+  const widest = Math.max(...sizes.map((size) => size.rx * 2));
+  const tallest = Math.max(...sizes.map((size) => size.ry * 2));
+  const requiredArea = sumRectArea(sizes) / 0.78;
+
+  const shelfFallback = () => {
+    const edge = step;
+    const gap = step;
+    const targetWidth = quantizeUp(
+      Math.max(
+        preferredWidth,
+        widest + edge * 2,
+        Math.sqrt(requiredArea * aspect) * 1.25,
+      ),
+      step,
+    );
+    let cursorX = edge;
+    let cursorY = edge;
+    let rowHeight = 0;
+    const placement = sizes.map((size) => {
+      const width = size.rx * 2;
+      const height = size.ry * 2;
+      if (
+        cursorX > edge &&
+        cursorX + width + edge > targetWidth
+      ) {
+        cursorX = edge;
+        cursorY += rowHeight + gap;
+        rowHeight = 0;
+      }
+      const ellipse = {
+        x: cursorX + size.rx,
+        y: cursorY + size.ry,
+        rx: size.rx,
+        ry: size.ry,
+      };
+      cursorX += width + gap;
+      rowHeight = Math.max(rowHeight, height);
+      return ellipse;
+    });
+    return {
+      placement,
+      k: 1 as const,
+      width: targetWidth,
+      height: quantizeUp(cursorY + rowHeight + edge, step),
+    };
+  };
+
+  // Dense documents favor a predictable linear world over a long synchronous
+  // search. The camera keeps that world navigable without allocating it.
+  if (sizes.length > 12) return shelfFallback();
+
+  let width = quantizeUp(
+    Math.max(preferredWidth, widest, Math.sqrt(requiredArea * aspect)),
+    step,
+  );
+  let height = quantizeUp(
+    Math.max(preferredHeight, tallest, (requiredArea * 1.02) / width),
+    step,
+  );
+
+  for (let iteration = 0; iteration < 12; iteration += 1) {
+    const placement = placeEllipsesRectPacked(width, height, sizes, {
+      gridStep: 20,
+      areaSlack: 0.78,
+      orderBias: 0.25,
+      edgeBias: 0.08,
+    });
+    if (placement !== "TOO_LARGE") {
+      return { placement, k: 1, width, height };
+    }
+    if (width / height <= aspect) width = quantizeUp(width * 1.12 + step, step);
+    else height = quantizeUp(height * 1.12 + step, step);
+  }
+
+  return shelfFallback();
 }
 
 export function ellipseSizeFromWords(
@@ -110,7 +200,7 @@ export function placeEllipsesRectPacked(
   const y0 = maxRy, y1 = H - maxRy;
 
   // scanline candidates (helps reading order)
-  const candidates: { x: number; y: number }[] = [];
+  let candidates: { x: number; y: number }[] = [];
   for (let y = y0; y <= y1; y += step) {
     for (let x = x0; x <= x1; x += step) {
       candidates.push({ x, y });
@@ -163,11 +253,11 @@ export function placeEllipsesRectPacked(
     // local pruning near the chosen spot (axis-aligned radius)
     const killX = s.rx + Math.max(step, Math.min(maxRx, 0.75 * s.rx));
     const killY = s.ry + Math.max(step, Math.min(maxRy, 0.75 * s.ry));
-    for (let i = candidates.length - 1; i >= 0; i--) {
-      const dx = Math.abs(candidates[i].x - best.x);
-      const dy = Math.abs(candidates[i].y - best.y);
-      if (dx < killX && dy < killY) candidates.splice(i, 1);
-    }
+    candidates = candidates.filter((candidate) => {
+      const dx = Math.abs(candidate.x - best.x);
+      const dy = Math.abs(candidate.y - best.y);
+      return dx >= killX || dy >= killY;
+    });
   }
 
   // micro-nudge upward/left if possible (preserve non-overlap)
@@ -189,4 +279,3 @@ export function placeEllipsesRectPacked(
 
   return placed;
 }
-

@@ -1,4 +1,5 @@
 import { Ellipse } from "./paragraphHelpers";
+import { seededRandom } from "./randomHelpers";
 export const BLUE_HEX = '#272757';
 export const DEEPBLUEGREEN_HEX = '#121c2dff';
 export const REDGREEN_HEX = '#ffffff20';
@@ -23,6 +24,7 @@ export type ColumnTextOpts = {
   color?: string;
   textAlign?: CanvasTextAlign;
   textBaseline?: CanvasTextBaseline;
+  compassImage?: HTMLImageElement | null;
 };
 
 export function punctToASCIIStar(punct: string): string {
@@ -35,12 +37,13 @@ export function punctToASCIIStar(punct: string): string {
   return punct;
 }
 
-export function generateStarPattern(length: number): string {
+export function generateStarPattern(length: number, seed = 0x51a7): string {
   const L = Math.max(0, Math.min(length, 200));
   let pattern = '';
   const asciiStarsWithMore = asciiStars.concat(['-', '·', ' ', '_', '-', '·', ' ', '_']);
+  const random = seededRandom(seed ^ L);
   for (let i = 0; i < L; i++) {
-    const star = asciiStarsWithMore[Math.floor(Math.random() * asciiStarsWithMore.length)];
+    const star = asciiStarsWithMore[Math.floor(random() * asciiStarsWithMore.length)];
     pattern += star;
   }
   return pattern;
@@ -213,6 +216,7 @@ export function drawWrappedColumns(
     color = '#000',
     textAlign = 'start',
     textBaseline = 'top',
+    compassImage = null,
   } = opts;
 
   ctx.save();
@@ -284,12 +288,10 @@ export function drawWrappedColumns(
   const dateWidth = ctx.measureText(dateStr).width;
   ctx.fillText(dateStr, cursorX + colW - dateWidth - 130, footerY + lineH * 2);
   //compass image next to text
-  const compassImg = new Image();
-  compassImg.src = '/compass.png';
-  compassImg.onload = () => {
+  if (compassImage) {
     const imgSize = 120;
-    ctx.drawImage(compassImg, cursorX + colW - imgSize, footerY - 30, imgSize, imgSize);
-  };
+    ctx.drawImage(compassImage, cursorX + colW - imgSize, footerY - 30, imgSize, imgSize);
+  }
   ctx.restore();
 }
 
@@ -381,12 +383,8 @@ export function drawAsciiParticles(
   } = opts;
 
   const p = new Uint8Array(512);
-  (function makePerm(s: number) {
-    // xorshift32
-    const rnd = () => {
-      s |= 0; s ^= s << 13; s ^= s >>> 17; s ^= s << 5; s |= 0;
-      return (s >>> 0) / 4294967296;
-    };
+  const rnd = seededRandom(seed);
+  (function makePerm() {
     const base = new Uint8Array(256);
     for (let i = 0; i < 256; i++) base[i] = i;
     for (let i = 255; i > 0; i--) {
@@ -394,7 +392,7 @@ export function drawAsciiParticles(
       const t = base[i]; base[i] = base[j]; base[j] = t;
     }
     for (let i = 0; i < 512; i++) p[i] = base[i & 255];
-  })(seed);
+  })();
 
   const fade = (t: number) => t * t * t * (t * (t * 6 - 15) + 10);
   const lerp = (a: number, b: number, t: number) => a + (b - a) * t;
@@ -450,13 +448,13 @@ export function drawAsciiParticles(
   ctx.textBaseline = "middle";
 
   for (let i = 0; i < count; i++) {
-    const px = x + Math.random() * W;
-    const py = y + Math.random() * H;
+    const px = x + rnd() * W;
+    const py = y + rnd() * H;
 
     const n = fbm(px * noiseScale, py * noiseScale, noiseOctaves); // [0,1]
     const wv = avoidWeight(px, py);
 
-    const pass = n * wv > Math.random() * 0.85;
+    const pass = n * wv > rnd() * 0.85;
     if (!pass) continue;
 
     const idx = Math.min(asciiStars.length - 1, Math.floor(n * asciiStars.length));

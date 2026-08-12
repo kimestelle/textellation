@@ -38,12 +38,24 @@ function bucketFromWinkPos(pos: string): POSBucket {
 }
 
 const PUNCT_RE = /^[,.;:!?—–\-()"'`]+$/;
+const CACHE_LIMIT = 256;
+const tagger = new posTagger();
+const sentenceCache = new Map<
+  string,
+  { tokens: string[]; buckets: POSBucket[] }
+>();
 
 //pos tagging pipeline
 export function tokenizeAndBucket(sentence: string): { tokens: string[]; buckets: POSBucket[] } {
-  const tagger = new posTagger();
+  const cacheKey = sentence.trim();
+  const cached = sentenceCache.get(cacheKey);
+  if (cached) {
+    sentenceCache.delete(cacheKey);
+    sentenceCache.set(cacheKey, cached);
+    return cached;
+  }
 
-  const tagged = tagger.tagSentence(sentence);
+  const tagged = tagger.tagSentence(cacheKey);
 
   const tokens: string[] = [];
   const buckets: POSBucket[] = [];
@@ -59,5 +71,11 @@ export function tokenizeAndBucket(sentence: string): { tokens: string[]; buckets
     else buckets.push(bucketFromWinkPos(t.pos));
   }
 
-  return { tokens, buckets };
+  const result = { tokens, buckets };
+  sentenceCache.set(cacheKey, result);
+  if (sentenceCache.size > CACHE_LIMIT) {
+    const oldest = sentenceCache.keys().next().value;
+    if (oldest !== undefined) sentenceCache.delete(oldest);
+  }
+  return result;
 }
