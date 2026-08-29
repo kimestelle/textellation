@@ -11,7 +11,7 @@ export default function CanvasOptionPreview({
     const line = active ? "rgba(255,255,255,0.34)" : "rgba(255,255,255,0.22)";
     return (
       <div
-        className="absolute flex items-center justify-center"
+        className="relative flex shrink-0 items-center justify-center"
         style={{ width: 64, height: 64 }}
         aria-hidden="true"
       >
@@ -55,7 +55,7 @@ export default function CanvasOptionPreview({
   const textHPct = (option.BG_BOTTOM_MARGIN / exportH) * 100;
 
   return (
-    <div className="absolute flex items-center justify-center" style={{ width: 64, height: 64 }}>
+    <div className="relative flex shrink-0 items-center justify-center" style={{ width: 64, height: 64 }} aria-hidden="true">
       <div
         className="relative overflow-hidden"
         style={{

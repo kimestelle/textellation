@@ -1,6 +1,7 @@
 // sentenceHelpers.ts
 import { forceSimulation, forceManyBody, forceLink, forceCollide, SimulationLinkDatum, Simulation } from 'd3-force';
 import type { POSBucket } from './posHelpers';
+import { punctToASCIIStar } from './drawHelpers';
 
 export type EllipsePlacement = { x: number; y: number; rx: number; ry: number };
 
@@ -46,8 +47,20 @@ export function makeFonts(opts: { family?: string; wordPx?: number }) {
   const verbFont = () => fontString({ family: fam, size: wordPx });
   const adjectiveFont = () => fontString({ italic: true, family: fam, size: wordPx });
   const headerFont = (size: number) => fontString({ weight: 500, italic: true, size: size ?? 44, family: fam });
+  const punctuationFont = () => fontString({
+    family: '"Star Glyphs", Newsreader, serif',
+    size: wordPx,
+  });
 
-  return { normalFont, firstWordFont, nounFont, verbFont, adjectiveFont, headerFont };
+  return {
+    normalFont,
+    firstWordFont,
+    nounFont,
+    verbFont,
+    adjectiveFont,
+    headerFont,
+    punctuationFont,
+  };
 }
 
 export function clampEllipse(
@@ -208,15 +221,18 @@ export function buildParagraphSim(args: {
       const punctOnly = bucket === 'PUNC';
 
       const isFirstInSentence = (w === firstWordIdx);
-      const measurementFont = isFirstInSentence
-        ? fontString({ italic: true, weight: 700, size: wordPx + 4, family: 'Newsreader' })
-        : bucket === 'ADJ'
-          ? fontString({ italic: true, size: wordPx, family: 'Newsreader' })
-          : bucket === 'NOUN'
-            ? fontString({ weight: 600, size: wordPx, family: 'Newsreader' })
-            : fontString({ size: wordPx, family: 'Newsreader' });
+      const measurementFont = punctOnly
+        ? fontString({ size: wordPx, family: '"Star Glyphs", Newsreader, serif' })
+        : isFirstInSentence
+          ? fontString({ italic: true, weight: 700, size: wordPx + 4, family: 'Newsreader' })
+          : bucket === 'ADJ'
+            ? fontString({ italic: true, size: wordPx, family: 'Newsreader' })
+            : bucket === 'NOUN'
+              ? fontString({ weight: 600, size: wordPx, family: 'Newsreader' })
+              : fontString({ size: wordPx, family: 'Newsreader' });
       ctx.font = measurementFont;
-      const wPx = Math.ceil(ctx.measureText(raw).width);
+      const renderedText = punctOnly ? punctToASCIIStar(raw) : raw;
+      const wPx = Math.ceil(ctx.measureText(renderedText).width);
       const width = wPx + baseGap;
       const height = isFirstInSentence ? lineH + 4 : lineH;
       // Collision follows the drawn label's axis-aligned footprint. A

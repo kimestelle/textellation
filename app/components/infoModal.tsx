@@ -29,20 +29,20 @@ export default function InfoModal({ isOpen, closeModule }: InfoModalProps) {
           >
             {'<close>'}
           </button> */}
-        </div>
+      </div>
 
       <p className="mb-2">this is a typographic constellation maker. map words like stars!</p>
-      {/* <p className="mb-4 text-neutral-400">
-        made with <span aria-hidden>❤</span> by{' '}
+      <p className="mb-4 text-neutral-400">
         <a
           href="https://www.estellekimdev.com/"
           target="_blank"
           rel="noreferrer"
-          className="underline"
+          className="font-semibold underline underline-offset-2"
+          onClick={(event) => event.stopPropagation()}
         >
-          estelle kim
+          made w/ love by estelle
         </a>
-      </p> */}
+      </p>
 
       {/* <p className="mt-2 mb-2 font-semibold">* how to use *</p> */}
       <ul className="text-neutral-400 mb-4 list-disc list-inside text-[15px] leading-relaxed">
@@ -75,7 +75,7 @@ export default function InfoModal({ isOpen, closeModule }: InfoModalProps) {
       </ol> */}
 
       <div
-        className="mt-auto pt-3 text-[12.5px]"
+        className="status-signal mt-auto pt-3 text-[11px]"
       >
         <span className="uppercase tracking-[0.18em]">v1.1</span>
       </div>

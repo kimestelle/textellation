@@ -48,16 +48,22 @@ textarea, input {
 }
 
 button {
-  background: #ffffff10;
-  border-radius: 3px;
-  border: 0.5px solid #ffffff50;
-  transition: all 0.2s ease-in-out;
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  font-family: var(--font-newsreader), serif;
+  transition: color 0.16s ease-in-out, opacity 0.16s ease-in-out;
 }
 
 button:hover {
   cursor: pointer;
   opacity: 0.8;
-  border: 0.5px solid #ffffff50;
+  border: 0;
+}
+
+button:focus-visible {
+  outline: 1px solid rgba(255, 255, 255, 0.55);
+  outline-offset: 3px;
 }
 
 .no-format {
@@ -71,6 +77,12 @@ button:hover {
   border: none;
   cursor: pointer;
   opacity: 0.8;
+}
+
+.status-signal {
+  font-family: var(--font-space-mono), monospace;
+  font-weight: 400;
+  letter-spacing: 0.015em;
 }
 
 .pill {

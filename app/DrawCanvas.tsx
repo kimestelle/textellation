@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { forceCollide, forceSimulation } from 'd3-force';
 import type { Simulation } from 'd3-force';
 
@@ -17,6 +17,12 @@ import {
 } from './helpers/drawHelpers';
 import { FixedCanvasOption } from './settings/canvasOptions';
 import { hashString, seededRandom } from './helpers/randomHelpers';
+import {
+  hitTestInspection,
+  type CanvasInspection,
+  type InspectableRegion,
+} from './helpers/inspectionHelpers';
+import InspectionCornerDetails from './components/InspectionCornerDetails';
 
 import {
   clampEllipse,
@@ -34,9 +40,21 @@ type CanvasProps = {
   canvasRef: React.RefObject<HTMLCanvasElement | null>;
   bgRef: React.RefObject<HTMLCanvasElement | null>;
   onReadyChange?: (ready: boolean) => void;
+  onInspectionHover?: (inspection: CanvasInspection | null) => void;
+  onInspectionSelect?: (inspection: CanvasInspection | null) => void;
+  activeInspection?: CanvasInspection | null;
+  selectedInspectionId?: string | null;
+  toolsOpen?: boolean;
+  onToggleTools?: () => void;
+  regionRevisions?: Record<number, number>;
+  compositionRevision?: number;
 };
 
+type FixedViewMode = 'fit' | '100' | 'all';
+type FixedViewTransform = { tx: number; ty: number; zoom: number };
+
 const imagePromises = new Map<string, Promise<HTMLImageElement | null>>();
+const EMPTY_REGION_REVISIONS: Record<number, number> = {};
 
 function loadCanvasImage(src: string) {
   const cached = imagePromises.get(src);
@@ -198,6 +216,57 @@ function countGlobalWordOverlaps(groups: CollisionGroup[]) {
   return overlaps;
 }
 
+function FixedInspectionMarker({
+  inspection,
+  pinned,
+  offsetX,
+  offsetY,
+}: {
+  inspection: CanvasInspection;
+  pinned: boolean;
+  offsetX: number;
+  offsetY: number;
+}) {
+  if (inspection.canvasKind !== 'fixed') return null;
+  const border = pinned
+    ? '1.5px solid rgba(255,255,255,0.92)'
+    : '1px dashed rgba(255,255,255,0.72)';
+  if (inspection.kind === 'word') {
+    const diameter = Math.max(inspection.anchor.width, inspection.anchor.height) + 14;
+    return (
+      <div
+        className="pointer-events-none absolute z-[8] rounded-full bg-white/[0.035]"
+        data-inspection-marker="word"
+        style={{
+          left: offsetX + inspection.anchor.x - diameter / 2,
+          top: offsetY + inspection.anchor.y - diameter / 2,
+          width: diameter,
+          height: diameter,
+          border,
+        }}
+      >
+        {pinned && <InspectionCornerDetails inspection={inspection} />}
+      </div>
+    );
+  }
+  const diameter = Math.max(inspection.anchor.rx, inspection.anchor.ry) * 2;
+  return (
+    <div
+      className="pointer-events-none absolute z-[7] rounded-full"
+      data-inspection-marker="region"
+      style={{
+        left: offsetX + inspection.anchor.x - diameter / 2,
+        top: offsetY + inspection.anchor.y - diameter / 2,
+        width: diameter,
+        height: diameter,
+        border,
+      }}
+    >
+      {pinned && <InspectionCornerDetails inspection={inspection} />}
+    </div>
+  );
+}
+
 export default function DrawCanvas({
   passageText,
   passageHeader,
@@ -205,15 +274,82 @@ export default function DrawCanvas({
   canvasRef,
   bgRef,
   onReadyChange,
+  onInspectionHover,
+  onInspectionSelect,
+  activeInspection,
+  selectedInspectionId,
+  toolsOpen = true,
+  onToggleTools,
+  regionRevisions = EMPTY_REGION_REVISIONS,
+  compositionRevision = 0,
 }: CanvasProps) {
   // scale view to wrapper
   const [scale, setScale] = useState(1);
   const wrapperRef = useRef<HTMLDivElement | null>(null);
   const stageRef = useRef<HTMLDivElement>(null);
   const zoomRef = useRef<HTMLDivElement | null>(null);
+  const inspectionRegionsRef = useRef<InspectableRegion[]>([]);
+  const lastHitRef = useRef<CanvasInspection | null>(null);
+  const lastHoverIdRef = useRef<string | null>(null);
+  const restViewRef = useRef<FixedViewTransform>({ tx: 0, ty: 0, zoom: 1 });
+  const [viewMode, setViewMode] = useState<FixedViewMode>('fit');
 
   const BG_WIDTH = canvasOption.W + 2 * canvasOption.BG_SIDE_MARGIN;
   const BG_HEIGHT = canvasOption.H + canvasOption.BG_TOP_MARGIN + canvasOption.BG_BOTTOM_MARGIN;
+  const INNER_X = canvasOption.BG_SIDE_MARGIN;
+  const INNER_Y = canvasOption.BG_TOP_MARGIN;
+  const viewZoom = useMemo(() => {
+    if (viewMode === 'fit') {
+      return Math.min(BG_WIDTH / canvasOption.W, BG_HEIGHT / canvasOption.H);
+    }
+    return viewMode === '100' ? 1 / Math.max(0.0001, scale) : 1;
+  }, [BG_HEIGHT, BG_WIDTH, canvasOption.H, canvasOption.W, scale, viewMode]);
+
+  const emitInspectionHover = useCallback((inspection: CanvasInspection | null) => {
+    const nextId = inspection?.id ?? null;
+    if (lastHoverIdRef.current === nextId) return;
+    lastHoverIdRef.current = nextId;
+    lastHitRef.current = inspection;
+    onInspectionHover?.(inspection);
+  }, [onInspectionHover]);
+
+  const applyRestView = useCallback((mode: FixedViewMode, animate = true) => {
+    const zoomEl = zoomRef.current;
+    let zoom = 1;
+    if (mode === 'fit') {
+      zoom = Math.min(BG_WIDTH / canvasOption.W, BG_HEIGHT / canvasOption.H);
+    } else if (mode === '100') {
+      zoom = 1 / Math.max(0.0001, scale);
+    }
+    const contentWidth = mode === 'fit' ? canvasOption.W : BG_WIDTH;
+    const contentHeight = mode === 'fit' ? canvasOption.H : BG_HEIGHT;
+    const contentX = mode === 'fit' ? INNER_X : 0;
+    const contentY = mode === 'fit' ? INNER_Y : 0;
+    const next = {
+      zoom,
+      tx: (BG_WIDTH - contentWidth * zoom) / 2 - contentX * zoom,
+      ty: (BG_HEIGHT - contentHeight * zoom) / 2 - contentY * zoom,
+    };
+    restViewRef.current = next;
+    if (!zoomEl) return;
+    zoomEl.style.transition = animate ? 'transform 220ms ease-out' : 'none';
+    zoomEl.style.transformOrigin = 'top left';
+    zoomEl.style.transform = `translate(${next.tx}px, ${next.ty}px) scale(${next.zoom})`;
+    zoomEl.style.setProperty(
+      '--inspection-label-scale',
+      String(1 / Math.max(0.0001, scale * next.zoom)),
+    );
+  }, [BG_HEIGHT, BG_WIDTH, INNER_X, INNER_Y, canvasOption.H, canvasOption.W, scale]);
+
+  const selectView = useCallback((mode: FixedViewMode) => {
+    setViewMode(mode);
+    emitInspectionHover(null);
+    applyRestView(mode);
+  }, [applyRestView, emitInspectionHover]);
+
+  useLayoutEffect(() => {
+    applyRestView(viewMode, false);
+  }, [applyRestView, viewMode]);
 
   //resize poster display to fit screen size
   useLayoutEffect(() => {
@@ -253,8 +389,6 @@ export default function DrawCanvas({
     const zoomEl = zoomRef.current;
     if (!wrapperEl || !zoomEl) return;
 
-    const targetScale = 3.0;
-
     let raf = 0;
     let lastX = 0;
     let lastY = 0;
@@ -272,31 +406,61 @@ export default function DrawCanvas({
 
       const mx = lastX - stageRect.left;
       const my = lastY - stageRect.top;
+      const screenX = mx / scale;
+      const screenY = my / scale;
 
-      // convert to unscaled poster coords (poster px)
-      const ux = mx / scale;
-      const uy = my / scale;
+      const fitZoom = Math.min(BG_WIDTH / canvasOption.W, BG_HEIGHT / canvasOption.H);
+      const fitRestTx = (BG_WIDTH - canvasOption.W * fitZoom) / 2 - INNER_X * fitZoom;
+      const fitRestTy = (BG_HEIGHT - canvasOption.H * fitZoom) / 2 - INNER_Y * fitZoom;
+      const restView = restViewRef.current;
+      const actualSizeScale = 1 / Math.max(0.0001, scale);
+      const targetScale = Math.min(
+        Math.max(0.0001, restView.zoom) * 3,
+        actualSizeScale,
+      );
 
-      // wrapper center expressed in *stage* coords (still poster px)
-      const wrapperCenterX_inStagePx = (wrapperRect.left + wrapperRect.width / 2) - stageRect.left;
-      const wrapperCenterY_inStagePx = (wrapperRect.top  + wrapperRect.height / 2) - stageRect.top;
+      // Resolve the raw cursor point through the canonical fit map.
+      const cameraX = (screenX - fitRestTx) / fitZoom;
+      const cameraY = (screenY - fitRestTy) / fitZoom;
+      const wrapperCenterX = (
+        wrapperRect.left + wrapperRect.width / 2 - stageRect.left
+      ) / scale;
+      const wrapperCenterY = (
+        wrapperRect.top + wrapperRect.height / 2 - stageRect.top
+      ) / scale;
 
-      const cx = wrapperCenterX_inStagePx / scale;
-      const cy = wrapperCenterY_inStagePx / scale;
+      const cameraForScale = (zoom: number) => {
+        const minTx = stageRect.width / scale - BG_WIDTH * zoom;
+        const minTy = stageRect.height / scale - BG_HEIGHT * zoom;
+        return {
+          tx: Math.min(0, Math.max(minTx, wrapperCenterX - cameraX * zoom)),
+          ty: Math.min(0, Math.max(minTy, wrapperCenterY - cameraY * zoom)),
+        };
+      };
 
-      // translate in unscaled coords so (ux,uy) goes to wrapper center when scaled by targetScale
-      let tx = cx - ux * targetScale;
-      let ty = cy - uy * targetScale;
-
-      // clamp so content stays covering the wrapper
-      const minTx = (stageRect.width / scale) - (BG_WIDTH * targetScale);
-      const minTy = (stageRect.height / scale) - (BG_HEIGHT * targetScale);
-
-      tx = Math.min(0, Math.max(minTx, tx));
-      ty = Math.min(0, Math.max(minTy, ty));
-
+      // Keep fit's familiar post-camera pointer probe as the source of truth,
+      // while the visible camera uses the selected view's own zoom degree.
+      const pointerScale = Math.max(0.0001, fitZoom) * 3;
+      const pointerCamera = cameraForScale(pointerScale);
+      const probeX = (screenX - pointerCamera.tx) / pointerScale;
+      const probeY = (screenY - pointerCamera.ty) / pointerScale;
+      const { tx, ty } = cameraForScale(targetScale);
+      zoomEl.style.transition = 'none';
       zoomEl.style.transformOrigin = 'top left';
       zoomEl.style.transform = `translate(${tx}px, ${ty}px) scale(${targetScale})`;
+      zoomEl.style.setProperty(
+        '--inspection-label-scale',
+        String(1 / Math.max(0.0001, scale * targetScale)),
+      );
+
+      emitInspectionHover(
+        hitTestInspection(
+          'fixed',
+          inspectionRegionsRef.current,
+          probeX - INNER_X,
+          probeY - INNER_Y,
+        ),
+      );
     };
 
     const onMove = (e: MouseEvent) => {
@@ -311,9 +475,15 @@ export default function DrawCanvas({
       if (raf) cancelAnimationFrame(raf);
       raf = 0;
 
-      // reset
+      emitInspectionHover(null);
+      zoomEl.style.transition = 'transform 220ms ease-out';
       zoomEl.style.transformOrigin = 'top left';
-      zoomEl.style.transform = `translate(0px, 0px) scale(1)`;
+      const restView = restViewRef.current;
+      zoomEl.style.transform = `translate(${restView.tx}px, ${restView.ty}px) scale(${restView.zoom})`;
+      zoomEl.style.setProperty(
+        '--inspection-label-scale',
+        String(1 / Math.max(0.0001, scale * restView.zoom)),
+      );
     };
 
     const onTouchMove = (e: TouchEvent) => {
@@ -328,9 +498,14 @@ export default function DrawCanvas({
       if (raf) cancelAnimationFrame(raf);
       raf = 0;
 
-      // reset
+      zoomEl.style.transition = 'transform 220ms ease-out';
       zoomEl.style.transformOrigin = 'top left';
-      zoomEl.style.transform = `translate(0px, 0px) scale(1)`;
+      const restView = restViewRef.current;
+      zoomEl.style.transform = `translate(${restView.tx}px, ${restView.ty}px) scale(${restView.zoom})`;
+      zoomEl.style.setProperty(
+        '--inspection-label-scale',
+        String(1 / Math.max(0.0001, scale * restView.zoom)),
+      );
     };
 
     wrapperEl.addEventListener('touchmove', onTouchMove, { passive: true });
@@ -348,25 +523,32 @@ export default function DrawCanvas({
       wrapperEl.removeEventListener('mouseleave', onLeave);
       if (raf) cancelAnimationFrame(raf);
     };
-  }, [BG_WIDTH, BG_HEIGHT, scale]);
-
-
-  const INNER_X = canvasOption.BG_SIDE_MARGIN;
-  const INNER_Y = canvasOption.BG_TOP_MARGIN;
+  }, [
+    BG_WIDTH,
+    BG_HEIGHT,
+    INNER_X,
+    INNER_Y,
+    canvasOption.H,
+    canvasOption.W,
+    emitInspectionHover,
+    scale,
+  ]);
+  const paragraphs = useMemo(
+    () => passageText
+      .split('\n')
+      .map((p) => p.trim())
+      .filter(Boolean),
+    [passageText],
+  );
 
   // paragraphs -> sentences
   const structure = useMemo(() => {
-    const paragraphs = passageText
-      .split('\n')
-      .map((p) => p.trim())
-      .filter(Boolean);
-
     return paragraphs.map((p) =>
       (p.match(/[^.!?]+[.!?]+|[^.!?]+$/g) || [p])
         .map((s) => s.trim())
         .filter(Boolean)
     );
-  }, [passageText]);
+  }, [paragraphs]);
 
   // paragraph ellipse sizes
   const sizes = useMemo(() => {
@@ -401,6 +583,10 @@ export default function DrawCanvas({
         const fontReady = document.fonts
           ? Promise.all([
               document.fonts.load(`${canvasOption.WORD_SIZE}px Newsreader`),
+              document.fonts.load(
+                `${canvasOption.WORD_SIZE}px "Star Glyphs"`,
+                '\uE000',
+              ),
               document.fonts.ready,
             ])
           : Promise.resolve();
@@ -552,7 +738,9 @@ export default function DrawCanvas({
             wordPx: canvasOption.WORD_SIZE,
             tokenizeAndBucket,
             random: seededRandom(
-              hashString(`${paragraph}:${structure[paragraph].join(' ')}`),
+              hashString(
+                `${paragraph}:${structure[paragraph].join(' ')}:${compositionRevision}:${regionRevisions[paragraph] ?? 0}`,
+              ),
             ),
           });
           paragraphNodes.push(nodes);
@@ -560,6 +748,15 @@ export default function DrawCanvas({
           collisionGroups.push({ ellipse: parEllipse, nodes });
           sims.push(sim);
         }
+        inspectionRegionsRef.current = collisionGroups.map((group, paragraph) => ({
+          paragraphIndex: paragraph,
+          sourceParagraph: paragraphs[paragraph],
+          sentenceCount: structure[paragraph].length,
+          wordSize: canvasOption.WORD_SIZE,
+          nodes: group.nodes,
+          links: paragraphLinks[paragraph],
+          ellipse: group.ellipse,
+        }));
         fg.dataset.renderStage = 'simulations-built';
         const allNodes = collisionGroups.flatMap((group) => group.nodes);
         const collisionPoints: CollisionPoint[] = allNodes.map((node) => ({
@@ -605,7 +802,8 @@ export default function DrawCanvas({
           ctx.textBaseline = 'middle';
           for (const nodes of paragraphNodes) {
             for (const node of nodes) {
-              if (node.isFirstInSentence) ctx.font = fonts.firstWordFont();
+              if (node.punctOnly) ctx.font = fonts.punctuationFont();
+              else if (node.isFirstInSentence) ctx.font = fonts.firstWordFont();
               else if (node.bucket === 'ADJ') ctx.font = fonts.adjectiveFont();
               else if (node.bucket === 'NOUN') ctx.font = fonts.nounFont();
               else if (node.bucket === 'VERB') ctx.font = fonts.verbFont();
@@ -727,6 +925,7 @@ export default function DrawCanvas({
       cancelled = true;
       window.cancelAnimationFrame(animationFrame);
       sims.forEach((simulation) => simulation.stop());
+      inspectionRegionsRef.current = [];
       onReadyChange?.(false);
     };
   }, [
@@ -734,7 +933,7 @@ export default function DrawCanvas({
     INNER_X, INNER_Y,
     canvasOption, canvasRef, bgRef,
     passageHeader, passageText,
-    sizes, structure,
+    paragraphs, regionRevisions, compositionRevision, sizes, structure,
     onReadyChange,
   ]);
 
@@ -742,6 +941,15 @@ export default function DrawCanvas({
     <div
       ref={wrapperRef}
       className="relative w-full h-full flex items-center justify-center overflow-hidden"
+      role="region"
+      tabIndex={0}
+      aria-label="Textellation canvas. Hover to inspect and click to pin a word or paragraph region."
+      onClick={() => onInspectionSelect?.(lastHitRef.current)}
+      onKeyDown={(event) => {
+        if (event.key !== 'Escape') return;
+        onInspectionSelect?.(null);
+        event.preventDefault();
+      }}
     >
       <div
         ref={stageRef}
@@ -759,7 +967,7 @@ export default function DrawCanvas({
         >
           <div
             ref={zoomRef}
-            className="absolute inset-0 transition-transform duration-300 ease-out"
+            className="absolute inset-0"
           >
             <canvas
               ref={bgRef}
@@ -777,8 +985,64 @@ export default function DrawCanvas({
                 left: canvasOption.BG_SIDE_MARGIN,
               }}
             />
+            {activeInspection && (
+              <FixedInspectionMarker
+                inspection={activeInspection}
+                pinned={activeInspection.id === selectedInspectionId}
+                offsetX={INNER_X}
+                offsetY={INNER_Y}
+              />
+            )}
           </div>
         </div>
+      </div>
+      <div className="pointer-events-none absolute bottom-3 right-3 top-3 z-20 flex flex-col items-end justify-between gap-2 md:bottom-auto md:flex-row md:items-center md:justify-start">
+        <div className="pointer-events-auto order-2 flex items-center gap-1 rounded-sm bg-black/55 px-3 py-1.5 shadow-[0_1px_8px_rgba(0,0,0,0.22)] backdrop-blur-md md:order-1">
+        {(['fit', '100', 'all'] as const).map((mode) => (
+          <button
+            key={mode}
+            type="button"
+            className={`no-format px-1 text-xs ${viewMode === mode ? 'text-white' : 'text-white/65'}`}
+            aria-pressed={viewMode === mode}
+            onClick={(event) => {
+              event.stopPropagation();
+              selectView(mode);
+            }}
+          >
+            [{mode === '100' ? '100%' : mode}]
+          </button>
+        ))}
+        <span className="status-signal min-w-12 px-1 text-center text-[10px] text-white/65" aria-label="Current zoom">
+          {Math.round(scale * viewZoom * 100)}%
+        </span>
+        <button
+          type="button"
+          className="no-format px-1 text-xs text-white/65"
+          onClick={(event) => {
+            event.stopPropagation();
+            setViewMode('fit');
+            onInspectionSelect?.(null);
+            emitInspectionHover(null);
+            applyRestView('fit');
+          }}
+        >
+          {'<reset>'}
+        </button>
+        </div>
+        {onToggleTools && (
+          <button
+            type="button"
+            className="no-format pointer-events-auto order-1 px-1 text-xs text-white md:order-2"
+            aria-label={toolsOpen ? 'Hide controls' : 'Open controls'}
+            aria-pressed={toolsOpen}
+            onClick={(event) => {
+              event.stopPropagation();
+              onToggleTools();
+            }}
+          >
+            {toolsOpen ? '<hide tools>' : '<tools>'}
+          </button>
+        )}
       </div>
     </div>
   );

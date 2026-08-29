@@ -4,6 +4,14 @@ export const BLUE_HEX = '#272757';
 export const DEEPBLUEGREEN_HEX = '#121c2dff';
 export const REDGREEN_HEX = '#ffffff20';
 
+function canvasMonoFamily() {
+  if (typeof document === 'undefined') return '"Space Mono", monospace';
+  const family = getComputedStyle(document.body)
+    .getPropertyValue('--font-space-mono')
+    .trim();
+  return family || '"Space Mono", monospace';
+}
+
 const romanNumerals = [
   'I.', 'II.', 'III.', 'IV.', 'V.', 'VI.', 'VII.', 'VIII.', 'IX.', 'X.',
   'XI.', 'XII.', 'XIII.', 'XIV.', 'XV.', 'XVI.', 'XVII.', 'XVIII.', 'XIX.', 'XX.'
@@ -304,7 +312,7 @@ export function drawSimpleFooter(
 ) : void {
   ctx.save();
   const fontPx = 14;
-  ctx.font = `${fontPx}px ibm-plex-mono, monospace`;
+  ctx.font = `${fontPx}px ${canvasMonoFamily()}`;
   ctx.fillStyle = '#ffffff80';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
@@ -442,7 +450,7 @@ export function drawAsciiParticles(
 
   const count = Math.floor(W * H * density);
   ctx.save();
-  ctx.font = `${sizePx}px "Star Glyphs", ibm-plex-mono, monospace`;
+  ctx.font = `${sizePx}px "Star Glyphs", ${canvasMonoFamily()}`;
   ctx.fillStyle = "#ffffff70";
   ctx.textAlign = "center";
   ctx.textBaseline = "middle";

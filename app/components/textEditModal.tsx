@@ -1,21 +1,48 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { littlePrince, lookingGlass } from '../settings/examples';
 import { CANVAS_OPTIONS, CanvasOption } from '../settings/canvasOptions';
-import { generateStarPattern } from '../helpers/drawHelpers';
 import {
   boundTextForCanvas,
   countWordsAndParagraphs,
 } from '../helpers/textFit';
 import CanvasOptionPreview from './CanvasOptionPreview';
+import {
+  splitPassageParagraphs,
+  type CanvasInspection,
+} from '../helpers/inspectionHelpers';
+
+export type SaveContext =
+  | { kind: 'automatic' }
+  | {
+      kind: 'region-edit';
+      editedRegionIndex: number;
+      editedParagraph: string;
+    };
 
 type TextEditModalProps = {
-  onSave: (text: string, header: string, canvasOption: CanvasOption) => void;
+  onSave: (
+    text: string,
+    header: string,
+    canvasOption: CanvasOption,
+    context?: SaveContext,
+  ) => void;
   onDownload?: () => void;
   downloadLabel?: string;
   downloadDisabled?: boolean;
+  renderedText: string;
+  renderedHeader: string;
+  renderedCanvasOption: CanvasOption;
+  selectedInspection?: CanvasInspection | null;
+  onClearInspection?: () => void;
+  onRecomposeRegion?: (paragraphIndex: number) => void;
+  onRecompose?: () => void;
 };
+
+function draftSignature(text: string, header: string, option: CanvasOption) {
+  return `${option.id}\u001f${header}\u001f${text}`;
+}
 
 function countLabel(text: string, option: CanvasOption) {
   const count = countWordsAndParagraphs(text, option);
@@ -27,6 +54,13 @@ export default function TextEditModal({
   onDownload,
   downloadLabel = 'download image',
   downloadDisabled = false,
+  renderedText,
+  renderedHeader,
+  renderedCanvasOption,
+  selectedInspection,
+  onClearInspection,
+  onRecomposeRegion,
+  onRecompose,
 }: TextEditModalProps) {
   const [text, setText] = useState<string>(littlePrince.text);
   const [header, setHeader] = useState<string>(littlePrince.header);
@@ -34,7 +68,20 @@ export default function TextEditModal({
   const [note, setNote] = useState<string>('');
   const [hoveredOption, setHoveredOption] = useState<CanvasOption | null>(null);
   const [isPreparing, setIsPreparing] = useState(false);
+  const [regionEdit, setRegionEdit] = useState<{ id: string; value: string } | null>(null);
+  const autoVersionRef = useRef(0);
+  const lastSubmittedRef = useRef(
+    draftSignature(littlePrince.text, littlePrince.header, CANVAS_OPTIONS[0]),
+  );
   const shownOption = hoveredOption ?? canvasSetting;
+  const selectedRegion = selectedInspection?.kind === 'region'
+    ? selectedInspection
+    : null;
+  const regionDraft = selectedRegion
+    ? regionEdit?.id === selectedRegion.id
+      ? regionEdit.value
+      : selectedRegion.sourceParagraph
+    : '';
 
   function handleExampleClick(example: { text: string; header: string }) {
     setText(example.text);
@@ -42,67 +89,109 @@ export default function TextEditModal({
     setNote('');
   }
 
-  async function handleSave() {
-    if (isPreparing) return;
-    if (!text.trim() || !header.trim()) {
-      setNote('please fill the header and text!');
+  useEffect(() => {
+    const signature = draftSignature(text, header, canvasSetting);
+    if (signature === lastSubmittedRef.current) return;
+    const version = ++autoVersionRef.current;
+    const timer = window.setTimeout(async () => {
+      const trimmedHeader = header.trim();
+      if (!text.trim() || !trimmedHeader) {
+        if (version !== autoVersionRef.current) return;
+        lastSubmittedRef.current = signature;
+        setIsPreparing(false);
+        setNote('Add a header and some text to render the canvas.');
+        onSave(text, trimmedHeader, canvasSetting, { kind: 'automatic' });
+        return;
+      }
+
+      setIsPreparing(true);
+      try {
+        const result = await boundTextForCanvas(text, canvasSetting);
+        if (version !== autoVersionRef.current) return;
+        const parts: string[] = [];
+        if (result.removedParas > 0) {
+          parts.push(`Removed ${result.removedParas} extra region${result.removedParas === 1 ? '' : 's'} (max ${canvasSetting.maxParas}).`);
+        }
+        if (result.trimmedWords > 0) {
+          parts.push(`Trimmed ${result.trimmedWords} word${result.trimmedWords === 1 ? '' : 's'} to keep this canvas responsive.`);
+        }
+        if (result.clippedTokens > 0) {
+          parts.push(`Shortened ${result.clippedTokens} unusually long token${result.clippedTokens === 1 ? '' : 's'}.`);
+        }
+        if (!result.ok) parts.push('This passage could not fit at a readable size.');
+        setNote(parts.join(' '));
+        if (!result.ok) return;
+        lastSubmittedRef.current = signature;
+        onSave(result.boundedText, trimmedHeader, canvasSetting, { kind: 'automatic' });
+      } catch {
+        if (version !== autoVersionRef.current) return;
+        setNote('This passage could not be prepared. Try a shorter one.');
+      } finally {
+        if (version === autoVersionRef.current) setIsPreparing(false);
+      }
+    }, 420);
+
+    return () => window.clearTimeout(timer);
+  }, [canvasSetting, header, onSave, text]);
+
+  async function handleRegionApply() {
+    if (!selectedRegion || isPreparing) return;
+    const nextParagraph = regionDraft.replace(/\s+/g, ' ').trim();
+    if (!nextParagraph) {
+      setNote('A selected region needs at least one word.');
       return;
     }
+    const paragraphs = splitPassageParagraphs(renderedText);
+    if (!paragraphs[selectedRegion.paragraphIndex]) {
+      setNote('That region is no longer present. Select it again on the canvas.');
+      return;
+    }
+    paragraphs[selectedRegion.paragraphIndex] = nextParagraph;
+    const nextText = paragraphs.join('\n\n');
 
     setIsPreparing(true);
     let result: Awaited<ReturnType<typeof boundTextForCanvas>>;
     try {
-      result = await boundTextForCanvas(text, canvasSetting);
+      result = await boundTextForCanvas(nextText, renderedCanvasOption);
     } catch {
-      setNote('This passage could not be prepared. Please try a shorter one.');
+      setNote('That region could not be prepared. Try a shorter paragraph.');
       setIsPreparing(false);
       return;
     }
     setIsPreparing(false);
+    if (!result.ok) {
+      setNote('That region cannot fit at a readable size.');
+      return;
+    }
 
-    const parts: string[] = [];
-    if (result.removedParas > 0) {
-      parts.push(`Removed ${result.removedParas} extra region${result.removedParas === 1 ? '' : 's'} (max ${canvasSetting.maxParas}).`);
+    const boundedParagraph = splitPassageParagraphs(result.boundedText)[selectedRegion.paragraphIndex];
+    if (!boundedParagraph) {
+      setNote('That edit removed the selected region. Try a shorter paragraph.');
+      return;
     }
-    if (result.trimmedWords > 0) {
-      parts.push(`Trimmed ${result.trimmedWords} word${result.trimmedWords === 1 ? '' : 's'} to keep this canvas responsive.`);
-    }
-    if (result.clippedTokens > 0) {
-      parts.push(`Shortened ${result.clippedTokens} unusually long token${result.clippedTokens === 1 ? '' : 's'}.`);
-    }
-    if (!result.ok) parts.push('This passage could not fit at a readable size.');
-    setNote(parts.join(' '));
-    if (!result.ok) return;
-    onSave(result.boundedText, header.trim(), canvasSetting);
+    setText(result.boundedText);
+    setHeader(renderedHeader);
+    setCanvasSetting(renderedCanvasOption);
+    setRegionEdit({ id: selectedRegion.id, value: boundedParagraph });
+    setNote('');
+    lastSubmittedRef.current = draftSignature(
+      result.boundedText,
+      renderedHeader,
+      renderedCanvasOption,
+    );
+    onSave(result.boundedText, renderedHeader, renderedCanvasOption, {
+      kind: 'region-edit',
+      editedRegionIndex: selectedRegion.paragraphIndex,
+      editedParagraph: boundedParagraph,
+    });
   }
 
   return (
-    <div className="relative flex flex-col gap-8 items-start justify-center w-full h-fit">
-      <div className="w-full flex items-center whitespace-nowrap">
-        <button type="button" className="no-format shrink-0" onClick={handleSave} disabled={isPreparing}>
-          {isPreparing ? '<preparing…>' : '<generate new>'}
-        </button>
-        <span
-          className="text-neutral-500 min-w-0 grow overflow-hidden whitespace-nowrap"
-          style={{ textOverflow: 'clip' }}
-          aria-hidden="true"
-        >
-          {generateStarPattern(200, 0x71f3)}
-        </span>
-        <button
-          type="button"
-          className="no-format shrink-0 disabled:cursor-not-allowed disabled:opacity-35"
-          onClick={onDownload}
-          disabled={downloadDisabled}
-        >
-          {`<${downloadLabel}>`}
-        </button>
-      </div>
-
-      <div className="w-full flex flex-col gap-2">
-        <div className="w-full flex flex-row">
-          <h3>edit text</h3>
-          <h3 className="text-neutral-500 border-b border-dashed flex-grow ml-2 mb-2" />
+    <div className="relative flex h-fit w-full flex-col items-start gap-7">
+      <section className="flex w-full flex-col gap-2" aria-labelledby="rail-text-heading">
+        <div className="flex w-full flex-row items-baseline">
+          <h3 id="rail-text-heading">1 text</h3>
+          <span className="mb-2 ml-2 flex-grow border-b border-dashed border-neutral-500" />
         </div>
         <input
           type="text"
@@ -120,18 +209,18 @@ export default function TextEditModal({
           }}
           aria-label="Passage"
           placeholder="Paste or type your text…"
-          className="w-full min-h-32 max-h-[36svh] outline-none resize-y overflow-y-auto"
+          className="min-h-32 max-h-[32svh] w-full resize-y overflow-y-auto outline-none"
         />
         {note ? (
-          <div role="status" className="text-[12px] leading-snug mb-3" style={{ color: 'rgba(255,120,120,0.78)' }}>
+          <div role="status" className="status-signal mb-3 text-[11px] leading-snug" style={{ color: 'rgba(255,120,120,0.78)' }}>
             {note}
           </div>
         ) : (
-          <div className="text-[12px] leading-snug" style={{ color: 'rgba(255,255,255,0.62)' }}>
+          <div className="status-signal text-[11px] leading-snug" style={{ color: 'rgba(255,255,255,0.62)' }}>
             {countLabel(text, canvasSetting)} · max {canvasSetting.maxWords} words
           </div>
         )}
-        <div className="flex flex-wrap justify-between gap-2 mb-4">
+        <div className="flex flex-wrap justify-between gap-2">
           <button
             type="button"
             className="no-format"
@@ -152,14 +241,15 @@ export default function TextEditModal({
             </button>
           </div>
         </div>
-      </div>
+      </section>
 
-      <div className="w-full flex flex-col gap-2">
-        <div className="w-full flex flex-row">
-          <h3>canvas settings</h3>
-          <h3 className="text-neutral-500 border-b border-dashed flex-grow ml-2 mb-2" />
+      <section className="flex w-full flex-col gap-3" aria-labelledby="rail-composition-heading">
+        <div className="flex w-full flex-row items-baseline">
+          <h3 id="rail-composition-heading">2 composition</h3>
+          <span className="mb-2 ml-2 flex-grow border-b border-dashed border-neutral-500" />
         </div>
-        <div className="w-full flex flex-row gap-2 mb-3 flex-wrap" role="group" aria-label="Canvas format">
+        <div className="w-full overflow-x-auto pb-1">
+          <div className="flex w-max min-w-full flex-nowrap justify-between gap-2" role="group" aria-label="Canvas format">
           {CANVAS_OPTIONS.map((option) => {
             const active = option.id === canvasSetting.id;
             return (
@@ -167,10 +257,7 @@ export default function TextEditModal({
                 type="button"
                 key={option.id}
                 aria-pressed={active}
-                className={[
-                  active ? 'is-active' : '',
-                  'canvas-option relative flex flex-col w-24 h-28 px-1 pb-2 justify-end items-center text-center',
-                ].join(' ')}
+                className="canvas-option no-format group flex w-16 shrink-0 flex-col items-center gap-1 p-0 text-center outline-none focus-visible:ring-1 focus-visible:ring-white/60"
                 onClick={() => {
                   setCanvasSetting(option);
                   setNote('');
@@ -181,18 +268,74 @@ export default function TextEditModal({
                 onBlur={() => setHoveredOption(null)}
               >
                 <CanvasOptionPreview option={option} active={active} />
-                <span className="relative z-10 leading-tight">{option.name}</span>
-                <span className="relative z-10 text-xs text-neutral-400">
-                  {option.kind === 'infinite' ? 'pan + zoom' : `${option.W}×${option.H}`}
+                <span className={active ? 'leading-tight text-white' : 'leading-tight text-neutral-400'}>
+                  [{option.name}]
                 </span>
               </button>
             );
           })}
+          </div>
         </div>
-        <div className="text-[12px] leading-snug mb-3" style={{ color: 'rgba(255,255,255,0.62)' }}>
+        <div className="status-signal text-[11px] leading-snug" style={{ color: 'rgba(255,255,255,0.62)' }}>
           {shownOption.description}
         </div>
-      </div>
+        <button
+          type="button"
+          className="no-format self-start text-neutral-200 disabled:cursor-not-allowed disabled:opacity-35"
+          onClick={onRecompose}
+          disabled={isPreparing}
+        >
+          {'<recompose>'}
+        </button>
+
+        {selectedRegion && (
+          <div className="mt-2 flex w-full flex-col gap-2 border-t border-dashed border-white/20 pt-3" aria-live="polite">
+            <div className="flex items-baseline justify-between gap-3">
+              <label htmlFor="selected-region-text" className="status-signal text-[10px] uppercase tracking-[0.12em] text-neutral-500">
+                edit paragraph {selectedRegion.paragraphIndex + 1}
+              </label>
+              <button type="button" className="no-format text-xs text-neutral-500" onClick={onClearInspection}>{'<clear>'}</button>
+            </div>
+            <textarea
+              id="selected-region-text"
+              value={regionDraft}
+              onChange={(event) => {
+                setRegionEdit({ id: selectedRegion.id, value: event.target.value });
+                setNote('');
+              }}
+              className="min-h-24 w-full resize-y outline-none"
+            />
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <button type="button" className="no-format" onClick={() => void handleRegionApply()} disabled={isPreparing}>
+                {isPreparing ? '<preparing…>' : '<apply region>'}
+              </button>
+              <button type="button" className="no-format text-neutral-400" onClick={() => onRecomposeRegion?.(selectedRegion.paragraphIndex)}>
+                {'<recompose region>'}
+              </button>
+            </div>
+          </div>
+        )}
+      </section>
+
+      <section className="flex w-full flex-col gap-3 pb-2" aria-labelledby="rail-output-heading">
+        <div className="flex w-full flex-row items-baseline">
+          <h3 id="rail-output-heading">3 output</h3>
+          <span className="mb-2 ml-2 flex-grow border-b border-dashed border-neutral-500" />
+        </div>
+        <div className="flex items-center justify-between gap-3">
+          <span className="status-signal text-[11px] text-neutral-500" role="status">
+            {isPreparing ? 'updating canvas…' : downloadDisabled ? 'canvas settling…' : 'canvas ready'}
+          </span>
+          <button
+            type="button"
+            className="no-format shrink-0 disabled:cursor-not-allowed disabled:opacity-35"
+            onClick={onDownload}
+            disabled={downloadDisabled}
+          >
+            {`<${downloadLabel}>`}
+          </button>
+        </div>
+      </section>
     </div>
   );
 }

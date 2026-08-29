@@ -25,12 +25,19 @@ import {
   type WordNode,
 } from './helpers/sentenceHelpers';
 import {
-  asciiStars,
   BLUE_HEX,
   DEEPBLUEGREEN_HEX,
+  drawAsciiParticles,
+  drawRadialGraph,
   punctToASCIIStar,
 } from './helpers/drawHelpers';
 import { hashString, seededRandom } from './helpers/randomHelpers';
+import {
+  hitTestInspection,
+  type CanvasInspection,
+  type InspectableRegion,
+} from './helpers/inspectionHelpers';
+import InspectionCornerDetails from './components/InspectionCornerDetails';
 
 type ViewTransform = { x: number; y: number; scale: number };
 type ContentBounds = { x: number; y: number; width: number; height: number };
@@ -56,6 +63,14 @@ type Props = {
   canvasOption: InfiniteCanvasOption;
   canvasRef: React.RefObject<HTMLCanvasElement | null>;
   onReadyChange?: (ready: boolean) => void;
+  onInspectionHover?: (inspection: CanvasInspection | null) => void;
+  onInspectionSelect?: (inspection: CanvasInspection | null) => void;
+  activeInspection?: CanvasInspection | null;
+  selectedInspectionId?: string | null;
+  toolsOpen?: boolean;
+  onToggleTools?: () => void;
+  regionRevisions?: Record<number, number>;
+  compositionRevision?: number;
 };
 
 type PointerPosition = { x: number; y: number };
@@ -69,6 +84,7 @@ const LIVE_SEED = hashString('textellation:infinite-live:001');
 const REGION_PADDING = 72;
 const REGION_HALO = 1.7;
 const MAX_PARTICLE_TILES = 120;
+const EMPTY_REGION_REVISIONS: Record<number, number> = {};
 
 function splitSentences(paragraph: string) {
   return (paragraph.match(/[^.!?]+[.!?]+|[^.!?]+$/g) ?? [paragraph])
@@ -107,14 +123,15 @@ function drawInfiniteBackground(
 ) {
   const centerX = focus.x + focus.width / 2;
   const centerY = focus.y + focus.height / 2;
-  const reference = Math.max(960, focus.width, focus.height);
+  const innerRadius = Math.min(focus.width, focus.height) * 0.35;
+  const outerRadius = Math.max(focus.width, focus.height) * 0.65;
   const gradient = context.createRadialGradient(
     centerX,
     centerY,
-    reference * 0.35,
+    innerRadius,
     centerX,
     centerY,
-    reference * 0.65,
+    outerRadius,
   );
   gradient.addColorStop(0, BLUE_HEX);
   gradient.addColorStop(1, DEEPBLUEGREEN_HEX);
@@ -148,66 +165,6 @@ function drawInfiniteBackground(
   context.restore();
 }
 
-function drawLiveRadialGraph(
-  context: CanvasRenderingContext2D,
-  ellipse: Ellipse,
-  index: number,
-) {
-  context.save();
-  context.beginPath();
-  context.ellipse(ellipse.x, ellipse.y, ellipse.rx, ellipse.ry, 0, 0, Math.PI * 2);
-  context.clip();
-  context.strokeStyle = 'rgba(255,255,255,0.72)';
-  context.lineWidth = 1.2;
-  context.setLineDash([1, 1]);
-  const radius = Math.max(ellipse.rx, ellipse.ry);
-  for (let spoke = 0; spoke < 16; spoke += 1) {
-    const angle = (spoke / 16) * Math.PI * 2;
-    context.beginPath();
-    context.moveTo(ellipse.x, ellipse.y);
-    context.lineTo(
-      ellipse.x + radius * Math.cos(angle),
-      ellipse.y + radius * Math.sin(angle),
-    );
-    context.stroke();
-  }
-  context.restore();
-
-  context.save();
-  const glow = context.createRadialGradient(
-    ellipse.x,
-    ellipse.y,
-    0,
-    ellipse.x,
-    ellipse.y,
-    ellipse.rx * REGION_HALO,
-  );
-  glow.addColorStop(0, 'rgba(255,255,255,0.12)');
-  glow.addColorStop(1, 'rgba(39,39,87,0)');
-  context.fillStyle = glow;
-  context.beginPath();
-  context.ellipse(
-    ellipse.x,
-    ellipse.y,
-    ellipse.rx * REGION_HALO,
-    ellipse.ry * REGION_HALO,
-    0,
-    0,
-    Math.PI * 2,
-  );
-  context.fill();
-  context.font = '400 100px Newsreader, Georgia, serif';
-  context.fillStyle = 'rgba(255,255,255,0.18)';
-  context.textAlign = index % 2 ? 'right' : 'left';
-  context.textBaseline = index % 3 ? 'top' : 'bottom';
-  context.fillText(
-    `${['I', 'II', 'III', 'IV', 'V', 'VI', 'VII', 'VIII', 'IX'][index % 9]}.`,
-    ellipse.x + (index % 2 ? ellipse.rx ** 0.92 : -(ellipse.rx ** 0.92)),
-    ellipse.y + (index % 3 ? -(ellipse.ry ** 0.92) : ellipse.ry ** 0.92),
-  );
-  context.restore();
-}
-
 function drawVisibleParticles(
   context: CanvasRenderingContext2D,
   visible: ContentBounds,
@@ -223,35 +180,23 @@ function drawVisibleParticles(
   const tileCount = (endX - startX) * (endY - startY);
   if (tileCount > MAX_PARTICLE_TILES) return;
 
-  context.save();
-  context.font = '12px "Star Glyphs", monospace';
-  context.textAlign = 'center';
-  context.textBaseline = 'middle';
   for (let tileY = startY; tileY < endY; tileY += 1) {
     for (let tileX = startX; tileX < endX; tileX += 1) {
-      const random = seededRandom(
-        LIVE_SEED ^ Math.imul(tileX, 73_856_093) ^ Math.imul(tileY, 19_349_663),
+      drawAsciiParticles(
+        context,
+        tileX * tileSize,
+        tileY * tileSize,
+        tileSize,
+        tileSize,
+        {
+          avoid: regions.map((region) => region.ellipse),
+          seed: LIVE_SEED ^
+            Math.imul(tileX, 73_856_093) ^
+            Math.imul(tileY, 19_349_663),
+        },
       );
-      for (let particle = 0; particle < 48; particle += 1) {
-        const x = tileX * tileSize + random() * tileSize;
-        const y = tileY * tileSize + random() * tileSize;
-        const insideRegion = regions.some((region) => {
-          const dx = (x - region.ellipse.x) / Math.max(1, region.ellipse.rx);
-          const dy = (y - region.ellipse.y) / Math.max(1, region.ellipse.ry);
-          return dx * dx + dy * dy < 1;
-        });
-        if (insideRegion || random() < 0.48) continue;
-        context.globalAlpha = 0.28 + random() * 0.34;
-        context.fillStyle = 'white';
-        context.fillText(
-          asciiStars[Math.floor(random() * asciiStars.length)],
-          x,
-          y,
-        );
-      }
     }
   }
-  context.restore();
 }
 
 function drawRegion(
@@ -280,7 +225,8 @@ function drawRegion(
   context.textAlign = 'center';
   context.textBaseline = 'middle';
   for (const node of region.nodes) {
-    if (node.isFirstInSentence) context.font = fonts.firstWordFont();
+    if (node.punctOnly) context.font = fonts.punctuationFont();
+    else if (node.isFirstInSentence) context.font = fonts.firstWordFont();
     else if (node.bucket === 'ADJ') context.font = fonts.adjectiveFont();
     else if (node.bucket === 'NOUN') context.font = fonts.nounFont();
     else if (node.bucket === 'VERB') context.font = fonts.verbFont();
@@ -295,12 +241,72 @@ function drawRegion(
   context.restore();
 }
 
+function InfiniteInspectionMarker({
+  inspection,
+  view,
+  pinned,
+}: {
+  inspection: CanvasInspection;
+  view: ViewTransform;
+  pinned: boolean;
+}) {
+  if (inspection.canvasKind !== 'infinite') return null;
+  const border = pinned
+    ? '1.5px solid rgba(255,255,255,0.92)'
+    : '1px dashed rgba(255,255,255,0.72)';
+  if (inspection.kind === 'word') {
+    const diameter = Math.max(
+      18,
+      (Math.max(inspection.anchor.width, inspection.anchor.height) + 14) * view.scale,
+    );
+    return (
+      <div
+        className="pointer-events-none absolute z-[8] rounded-full bg-white/[0.035]"
+        data-inspection-marker="word"
+        style={{
+          left: view.x + inspection.anchor.x * view.scale - diameter / 2,
+          top: view.y + inspection.anchor.y * view.scale - diameter / 2,
+          width: diameter,
+          height: diameter,
+          border,
+        }}
+      >
+        {pinned && <InspectionCornerDetails inspection={inspection} />}
+      </div>
+    );
+  }
+  const diameter = Math.max(4, Math.max(inspection.anchor.rx, inspection.anchor.ry) * 2 * view.scale);
+  return (
+    <div
+      className="pointer-events-none absolute z-[7] rounded-full"
+      data-inspection-marker="region"
+      style={{
+        left: view.x + inspection.anchor.x * view.scale - diameter / 2,
+        top: view.y + inspection.anchor.y * view.scale - diameter / 2,
+        width: diameter,
+        height: diameter,
+        border,
+      }}
+    >
+      {pinned && <InspectionCornerDetails inspection={inspection} />}
+    </div>
+  );
+}
+
 export default function InfiniteLiveCanvas({
   passageText,
   passageHeader,
   canvasOption,
   canvasRef,
   onReadyChange,
+  onInspectionHover,
+  onInspectionSelect,
+  activeInspection,
+  selectedInspectionId,
+  toolsOpen = true,
+  onToggleTools,
+  regionRevisions = EMPTY_REGION_REVISIONS,
+  compositionRevision = 0,
 }: Props) {
   const wrapperRef = useRef<HTMLDivElement | null>(null);
   const geometryCacheRef = useRef(new Map<string, RegionGeometry>());
@@ -318,6 +324,8 @@ export default function InfiniteLiveCanvas({
   const pinchRef = useRef<PinchGesture | null>(null);
   const hasCenteredRef = useRef(false);
   const noiseRef = useRef<HTMLImageElement | null>(null);
+  const inspectionRegionsRef = useRef<InspectableRegion[]>([]);
+  const lastHoverIdRef = useRef<string | null>(null);
   const [model, setModel] = useState<LiveModel | null>(null);
   const [viewport, setViewport] = useState({ width: 0, height: 0 });
   const [view, setView] = useState(viewRef.current);
@@ -334,6 +342,30 @@ export default function InfiniteLiveCanvas({
         .filter(Boolean),
     [passageText],
   );
+
+  const emitInspectionHover = useCallback((inspection: CanvasInspection | null) => {
+    const nextId = inspection?.id ?? null;
+    if (lastHoverIdRef.current === nextId) return;
+    lastHoverIdRef.current = nextId;
+    onInspectionHover?.(inspection);
+  }, [onInspectionHover]);
+
+  const inspectionAtPoint = useCallback((
+    element: HTMLDivElement,
+    clientX: number,
+    clientY: number,
+  ) => {
+    const rect = element.getBoundingClientRect();
+    const localX = clientX - rect.left;
+    const localY = clientY - rect.top;
+    const current = viewRef.current;
+    return hitTestInspection(
+      'infinite',
+      inspectionRegionsRef.current,
+      (localX - current.x) / current.scale,
+      (localY - current.y) / current.scale,
+    );
+  }, []);
 
   const clampScale = useCallback(
     (scale: number) =>
@@ -393,6 +425,58 @@ export default function InfiniteLiveCanvas({
     });
     hasCenteredRef.current = true;
   }, [clampScale, model, scheduleView, viewport]);
+
+  const fitView = useCallback(() => {
+    if (!activeInspection || activeInspection.canvasKind !== 'infinite') {
+      focusFirst();
+      return;
+    }
+    const anchor = activeInspection.anchor;
+    let width: number;
+    let height: number;
+    if (activeInspection.kind === 'region') {
+      width = activeInspection.anchor.rx * REGION_HALO * 2;
+      height = activeInspection.anchor.ry * REGION_HALO * 2;
+    } else {
+      width = Math.max(260, activeInspection.anchor.width * 6);
+      height = Math.max(180, activeInspection.anchor.height * 6);
+    }
+    const air = Math.min(viewport.width, viewport.height) * 0.14;
+    const scale = clampScale(Math.min(
+      (viewport.width - air * 2) / Math.max(1, width),
+      (viewport.height - air * 2) / Math.max(1, height),
+      1,
+    ));
+    scheduleView({
+      scale,
+      x: viewport.width / 2 - anchor.x * scale,
+      y: viewport.height / 2 - anchor.y * scale,
+    });
+    hasCenteredRef.current = true;
+  }, [activeInspection, clampScale, focusFirst, scheduleView, viewport]);
+
+  const setActualSize = useCallback(() => {
+    if (!viewport.width || !viewport.height) return;
+    scheduleView((current) => {
+      const worldX = (viewport.width / 2 - current.x) / current.scale;
+      const worldY = (viewport.height / 2 - current.y) / current.scale;
+      const scale = clampScale(1);
+      return {
+        scale,
+        x: viewport.width / 2 - worldX * scale,
+        y: viewport.height / 2 - worldY * scale,
+      };
+    });
+  }, [clampScale, scheduleView, viewport]);
+
+  const centerInspection = useCallback((inspection: CanvasInspection | null) => {
+    if (!inspection || inspection.canvasKind !== 'infinite') return;
+    scheduleView((current) => ({
+      ...current,
+      x: viewport.width / 2 - inspection.anchor.x * current.scale,
+      y: viewport.height / 2 - inspection.anchor.y * current.scale,
+    }));
+  }, [scheduleView, viewport]);
 
   const zoomAt = useCallback(
     (factor: number, focusX: number, focusY: number) => {
@@ -497,6 +581,10 @@ export default function InfiniteLiveCanvas({
         if (document.fonts) {
           await Promise.all([
             document.fonts.load(`${canvasOption.WORD_SIZE}px Newsreader`),
+            document.fonts.load(
+              `${canvasOption.WORD_SIZE}px "Star Glyphs"`,
+              '\uE000',
+            ),
             document.fonts.ready,
           ]);
         }
@@ -542,6 +630,8 @@ export default function InfiniteLiveCanvas({
             canvasOption.WORD_SIZE,
             ellipse.rx.toFixed(3),
             ellipse.ry.toFixed(3),
+            compositionRevision,
+            regionRevisions[index] ?? 0,
           ].join('\u001f');
           activeKeys.add(key);
           let geometry = workingCache.get(key);
@@ -594,6 +684,16 @@ export default function InfiniteLiveCanvas({
           });
         }
         if (cancelled) return;
+        inspectionRegionsRef.current = regions.map((region, index) => ({
+          paragraphIndex: index,
+          sourceParagraph: paragraphs[index],
+          sentenceCount: structures[index].length,
+          wordSize: canvasOption.WORD_SIZE,
+          nodes: region.nodes,
+          links: region.links,
+          ellipse: region.ellipse,
+          nodesRelativeToEllipse: true,
+        }));
         geometryCacheRef.current = new Map(
           [...workingCache].filter(([key]) => activeKeys.has(key)),
         );
@@ -610,9 +710,10 @@ export default function InfiniteLiveCanvas({
     return () => {
       cancelled = true;
       simulations.forEach((simulation) => simulation.stop());
+      inspectionRegionsRef.current = [];
       onReadyChange?.(false);
     };
-  }, [canvasOption, onReadyChange, paragraphs]);
+  }, [canvasOption, compositionRevision, onReadyChange, paragraphs, regionRevisions]);
 
   useEffect(() => {
     if (model && !hasCenteredRef.current) focusFirst();
@@ -689,9 +790,9 @@ export default function InfiniteLiveCanvas({
 
     if (model) {
       context.save();
-      context.strokeStyle = 'rgba(255,255,255,0.72)';
+      context.strokeStyle = 'white';
       context.lineWidth = 1;
-      context.setLineDash([2, 3]);
+      context.setLineDash([1, 1]);
       for (let index = 0; index < model.regions.length - 1; index += 1) {
         const first = model.regions[index].ellipse;
         const second = model.regions[index + 1].ellipse;
@@ -703,7 +804,14 @@ export default function InfiniteLiveCanvas({
       context.restore();
       const visibleRegions = model.regions.filter((region) => intersects(region.ellipse, visible));
       visibleRegions.forEach((region) => {
-        drawLiveRadialGraph(context, region.ellipse, model.regions.indexOf(region));
+        drawRadialGraph(
+          context,
+          region.ellipse.x,
+          region.ellipse.y,
+          region.ellipse.rx,
+          region.ellipse.ry,
+          model.regions.indexOf(region),
+        );
       });
       drawVisibleParticles(context, visible, visibleRegions, view.scale);
       visibleRegions.forEach((region) => {
@@ -712,10 +820,16 @@ export default function InfiniteLiveCanvas({
 
       context.save();
       context.fillStyle = 'rgba(255,255,255,0.88)';
-      context.font = 'italic 500 34px Newsreader, Georgia, serif';
+      context.font = makeFonts({ family: 'Newsreader', wordPx: canvasOption.WORD_SIZE })
+        .headerFont(34);
       context.textAlign = 'left';
-      context.textBaseline = 'bottom';
-      context.fillText(passageHeader, model.bounds.x, model.bounds.y - 12);
+      context.textBaseline = 'top';
+      const first = model.regions[0].ellipse;
+      context.fillText(
+        passageHeader,
+        first.x - first.rx * REGION_HALO,
+        first.y - first.ry * REGION_HALO,
+      );
       context.restore();
     }
 
@@ -724,7 +838,7 @@ export default function InfiniteLiveCanvas({
       context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
       const pattern = context.createPattern(texture, 'repeat');
       if (pattern) {
-        context.globalAlpha = 0.22;
+        context.globalAlpha = 0.7;
         context.fillStyle = pattern;
         context.fillRect(0, 0, viewport.width, viewport.height);
         context.globalAlpha = 1;
@@ -747,6 +861,7 @@ export default function InfiniteLiveCanvas({
 
   const startPan = (event: ReactPointerEvent<HTMLDivElement>) => {
     if (event.pointerType === 'mouse' && event.button !== 0) return;
+    emitInspectionHover(null);
     event.currentTarget.setPointerCapture(event.pointerId);
     const rect = event.currentTarget.getBoundingClientRect();
     pointersRef.current.set(event.pointerId, {
@@ -779,7 +894,14 @@ export default function InfiniteLiveCanvas({
   };
 
   const continuePan = (event: ReactPointerEvent<HTMLDivElement>) => {
-    if (!pointersRef.current.has(event.pointerId)) return;
+    if (!pointersRef.current.has(event.pointerId)) {
+      if (event.pointerType === 'mouse') {
+        emitInspectionHover(
+          inspectionAtPoint(event.currentTarget, event.clientX, event.clientY),
+        );
+      }
+      return;
+    }
     const rect = event.currentTarget.getBoundingClientRect();
     pointersRef.current.set(event.pointerId, {
       x: event.clientX - rect.left,
@@ -815,6 +937,17 @@ export default function InfiniteLiveCanvas({
   };
 
   const endPan = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const rect = event.currentTarget.getBoundingClientRect();
+    const drag = dragRef.current;
+    const wasClick = pointersRef.current.size === 1 &&
+      drag?.pointerId === event.pointerId &&
+      Math.hypot(
+        event.clientX - rect.left - drag.clientX,
+        event.clientY - rect.top - drag.clientY,
+      ) <= 4;
+    const clickedInspection = wasClick
+      ? inspectionAtPoint(event.currentTarget, event.clientX, event.clientY)
+      : null;
     pointersRef.current.delete(event.pointerId);
     if (event.currentTarget.hasPointerCapture(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId);
@@ -846,11 +979,17 @@ export default function InfiniteLiveCanvas({
       dragRef.current = null;
       setIsPanning(false);
     }
+    if (wasClick) {
+      emitInspectionHover(clickedInspection);
+      onInspectionSelect?.(clickedInspection);
+      centerInspection(clickedInspection);
+    }
   };
 
   const handleKeyDown = (event: ReactKeyboardEvent<HTMLDivElement>) => {
     const step = event.shiftKey ? canvasOption.GRID_SIZE * 8 : canvasOption.GRID_SIZE * 3;
-    if (event.key === 'ArrowLeft') scheduleView((current) => ({ ...current, x: current.x + step }));
+    if (event.key === 'Escape') onInspectionSelect?.(null);
+    else if (event.key === 'ArrowLeft') scheduleView((current) => ({ ...current, x: current.x + step }));
     else if (event.key === 'ArrowRight') scheduleView((current) => ({ ...current, x: current.x - step }));
     else if (event.key === 'ArrowUp') scheduleView((current) => ({ ...current, y: current.y + step }));
     else if (event.key === 'ArrowDown') scheduleView((current) => ({ ...current, y: current.y - step }));
@@ -879,6 +1018,9 @@ export default function InfiniteLiveCanvas({
       onPointerUp={endPan}
       onPointerCancel={endPan}
       onLostPointerCapture={endPan}
+      onPointerLeave={() => {
+        if (!pointersRef.current.size) emitInspectionHover(null);
+      }}
       style={{ touchAction: 'none', cursor: isPanning ? 'grabbing' : 'grab' }}
     >
       <canvas
@@ -886,59 +1028,88 @@ export default function InfiniteLiveCanvas({
         className="absolute inset-0 block w-full h-full"
         aria-hidden="true"
       />
-      <div className="pointer-events-none absolute bottom-3 left-3 z-10 text-[11px] text-white/55">
-        ∞ live field · drag / pinch / scroll · {Math.round(view.scale * 100)}%
-      </div>
-      <div className="absolute bottom-3 right-3 z-10 flex gap-1">
+      {activeInspection && (
+        <InfiniteInspectionMarker
+          inspection={activeInspection}
+          view={view}
+          pinned={activeInspection.id === selectedInspectionId}
+        />
+      )}
+      <div className="pointer-events-none absolute bottom-3 right-3 top-3 z-10 flex flex-col items-end justify-between gap-2 md:bottom-auto md:flex-row md:items-center md:justify-start">
+        <div className="pointer-events-auto order-2 flex items-center gap-1 rounded-sm bg-black/55 px-3 py-1.5 shadow-[0_1px_8px_rgba(0,0,0,0.22)] backdrop-blur-md md:order-1">
         <button
           type="button"
-          className="h-7 min-w-7 border-white/25 bg-black/25 px-2 text-xs text-white/75"
-          aria-label="Zoom out"
-          onPointerDown={(event) => {
-            event.stopPropagation();
-            zoomAt(0.82, viewport.width / 2, viewport.height / 2);
-          }}
+          className="no-format px-1 text-xs text-white/75"
+          aria-label="Fit selected region or first region"
+          onPointerDown={(event) => event.stopPropagation()}
           onClick={(event) => {
             event.stopPropagation();
-            if (event.detail === 0) zoomAt(0.82, viewport.width / 2, viewport.height / 2);
+            fitView();
           }}
         >
-          −
+          [fit]
         </button>
         <button
           type="button"
-          className="h-7 min-w-7 border-white/25 bg-black/25 px-2 text-xs text-white/75"
+          className="no-format px-1 text-xs text-white/75"
+          aria-label="Show at 100 percent"
+          onPointerDown={(event) => event.stopPropagation()}
+          onClick={(event) => {
+            event.stopPropagation();
+            setActualSize();
+          }}
+        >
+          [100%]
+        </button>
+        <button
+          type="button"
+          className="no-format px-1 text-xs text-white/75"
           aria-label="Show all regions"
-          onPointerDown={(event) => {
+          onPointerDown={(event) => event.stopPropagation()}
+          onClick={(event) => {
             event.stopPropagation();
             fitAll();
           }}
-          onClick={(event) => {
-            event.stopPropagation();
-            if (event.detail === 0) fitAll();
-          }}
         >
-          all
+          [all]
         </button>
+        <span className="status-signal min-w-12 px-1 text-center text-[10px] text-white/65" aria-label="Current zoom">
+          {Math.round(view.scale * 100)}%
+        </span>
         <button
           type="button"
-          className="h-7 min-w-7 border-white/25 bg-black/25 px-2 text-xs text-white/75"
-          aria-label="Zoom in"
-          onPointerDown={(event) => {
-            event.stopPropagation();
-            zoomAt(1.22, viewport.width / 2, viewport.height / 2);
-          }}
+          className="no-format px-1 text-xs text-white/75"
+          aria-label="Reset view"
+          onPointerDown={(event) => event.stopPropagation()}
           onClick={(event) => {
             event.stopPropagation();
-            if (event.detail === 0) zoomAt(1.22, viewport.width / 2, viewport.height / 2);
+            onInspectionSelect?.(null);
+            emitInspectionHover(null);
+            focusFirst();
           }}
         >
-          +
+          {'<reset>'}
         </button>
+        </div>
+        {onToggleTools && (
+          <button
+            type="button"
+            className="no-format pointer-events-auto order-1 px-1 text-xs text-white md:order-2"
+            aria-label={toolsOpen ? 'Hide controls' : 'Open controls'}
+            aria-pressed={toolsOpen}
+            onPointerDown={(event) => event.stopPropagation()}
+            onClick={(event) => {
+              event.stopPropagation();
+              onToggleTools();
+            }}
+          >
+            {toolsOpen ? '<hide tools>' : '<tools>'}
+          </button>
+        )}
       </div>
       {(isBuilding || error) && (
         <div
-          className="pointer-events-none absolute inset-0 z-20 flex items-center justify-center bg-[#121c2d]/70 px-8 text-center text-sm text-white/75"
+          className="status-signal pointer-events-none absolute inset-0 z-20 flex items-center justify-center bg-[#121c2d]/70 px-8 text-center text-[11px] text-white/75"
           role={error ? 'alert' : 'status'}
         >
           {error || 'settling the live field…'}

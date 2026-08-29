@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { Newsreader, IBM_Plex_Mono, Nanum_Myeongjo } from "next/font/google";
+import { Newsreader, Nanum_Myeongjo, Space_Mono } from "next/font/google";
 import "./globals.css";
 
 const newsreader = Newsreader({
@@ -8,10 +8,10 @@ const newsreader = Newsreader({
   variable: "--font-newsreader",
 });
 
-const IBMPlexMono = IBM_Plex_Mono({
+const spaceMono = Space_Mono({
   subsets: ["latin"],
   weight: ["400", "700"],
-  variable: "--font-ibm-plex-mono",
+  variable: "--font-space-mono",
 });
 
 const NanumMyeongjo = Nanum_Myeongjo({
@@ -33,7 +33,7 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body
-        className={`${newsreader.variable} ${IBMPlexMono.variable} ${NanumMyeongjo.variable} antialiased`}
+        className={`${newsreader.variable} ${spaceMono.variable} ${NanumMyeongjo.variable} antialiased`}
       >
         {children}
       </body>
