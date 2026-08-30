@@ -61,6 +61,9 @@ export default function Home() {
   const [renderVisibility, setRenderVisibility] = useState<RenderVisibility>(
     PRESET_RENDER_VISIBILITY.baseline,
   );
+  const [appliedRenderVisibility, setAppliedRenderVisibility] = useState<RenderVisibility>(
+    PRESET_RENDER_VISIBILITY.baseline,
+  );
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const bgRef = useRef<HTMLCanvasElement | null>(null);
@@ -76,6 +79,7 @@ export default function Home() {
   const flushFrameRef = useRef<number | null>(null);
   const specimenScrollFrameRef = useRef<number | null>(null);
   const exportBusyRef = useRef(false);
+  const visibilityTimerRef = useRef<number | null>(null);
 
   useEffect(() => () => {
     if (flushFrameRef.current !== null) {
@@ -83,6 +87,9 @@ export default function Home() {
     }
     if (specimenScrollFrameRef.current !== null) {
       window.cancelAnimationFrame(specimenScrollFrameRef.current);
+    }
+    if (visibilityTimerRef.current !== null) {
+      window.clearTimeout(visibilityTimerRef.current);
     }
   }, []);
   
@@ -214,13 +221,36 @@ export default function Home() {
   }, []);
 
   const handleCompositionPresetChange = useCallback((preset: CompositionPresetId) => {
-    setRenderVisibility({ ...PRESET_RENDER_VISIBILITY[preset] });
+    if (visibilityTimerRef.current !== null) {
+      window.clearTimeout(visibilityTimerRef.current);
+      visibilityTimerRef.current = null;
+    }
+    const presetVisibility = { ...PRESET_RENDER_VISIBILITY[preset] };
+    setRenderVisibility(presetVisibility);
+    setAppliedRenderVisibility(presetVisibility);
     if (preset === compositionPreset) return;
     setCompositionPreset(preset);
     setHoveredInspection(null);
     setSelectedInspection(null);
     setRenderReady(false);
   }, [compositionPreset]);
+
+  const handleRenderVisibilityChange = useCallback((next: RenderVisibility) => {
+    setRenderVisibility(next);
+    if (!window.matchMedia('(max-width: 1023px), (pointer: coarse)').matches) {
+      setAppliedRenderVisibility(next);
+      return;
+    }
+    if (visibilityTimerRef.current !== null) {
+      window.clearTimeout(visibilityTimerRef.current);
+    }
+    // Knob labels respond immediately; the expensive canvas paint is trailing
+    // and latest-only so a run of taps cannot queue multiple mobile redraws.
+    visibilityTimerRef.current = window.setTimeout(() => {
+      visibilityTimerRef.current = null;
+      setAppliedRenderVisibility(next);
+    }, 220);
+  }, []);
 
   const commitSave = useCallback((save: PendingSave) => {
     const { text, header, option, context } = save;
@@ -411,7 +441,7 @@ export default function Home() {
                   regionRevisions={regionRevisions}
                   compositionRevision={compositionRevision}
                   compositionPreset={compositionPreset}
-                  renderVisibility={renderVisibility}
+                  renderVisibility={appliedRenderVisibility}
                 />
               ) : (
                 <InfiniteLiveCanvas
@@ -429,7 +459,7 @@ export default function Home() {
                   regionRevisions={regionRevisions}
                   compositionRevision={compositionRevision}
                   compositionPreset={compositionPreset}
-                  renderVisibility={renderVisibility}
+                  renderVisibility={appliedRenderVisibility}
                 />
               )
             )}
@@ -478,7 +508,7 @@ export default function Home() {
                 compositionQueued={compositionQueued}
                 onCompositionPresetChange={handleCompositionPresetChange}
                 renderVisibility={renderVisibility}
-                onRenderVisibilityChange={setRenderVisibility}
+                onRenderVisibilityChange={handleRenderVisibilityChange}
             />
               </div>
             )}

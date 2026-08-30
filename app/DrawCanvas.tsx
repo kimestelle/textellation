@@ -321,6 +321,8 @@ export default function DrawCanvas({
   const restViewRef = useRef<FixedViewTransform>({ tx: 0, ty: 0, zoom: 1 });
   const visibilityRef = useRef(renderVisibility);
   const redrawVisualsRef = useRef<() => void>(() => {});
+  const redrawBackgroundRef = useRef<() => void>(() => {});
+  const redrawForegroundRef = useRef<() => void>(() => {});
   const redrawHeaderRef = useRef<() => void>(() => {});
   const [viewMode, setViewMode] = useState<FixedViewMode>('fit');
 
@@ -345,31 +347,28 @@ export default function DrawCanvas({
   const dynamics = COMPOSITION_PRESETS[compositionPreset].dynamics;
 
   useEffect(() => {
-    const foreground = canvasRef.current;
-    const background = bgRef.current;
-    if (foreground) {
-      foreground.width = previewWidth;
-      foreground.height = previewHeight;
-    }
-    if (background) {
-      background.width = previewBgWidth;
-      background.height = previewBgHeight;
-    }
-    return () => {
-      if (foreground) {
-        foreground.width = 1;
-        foreground.height = 1;
-      }
-      if (background) {
-        background.width = 1;
-        background.height = 1;
-      }
-    };
-  }, [bgRef, canvasRef, previewBgHeight, previewBgWidth, previewHeight, previewWidth]);
-
-  useEffect(() => {
+    const previous = visibilityRef.current;
     visibilityRef.current = renderVisibility;
-    redrawVisualsRef.current();
+    const wordEdgesChanged =
+      previous.orderEdges !== renderVisibility.orderEdges ||
+      previous.punctuationEdges !== renderVisibility.punctuationEdges ||
+      previous.strongPosEdges !== renderVisibility.strongPosEdges ||
+      previous.weakPosEdges !== renderVisibility.weakPosEdges;
+    const fieldLayersChanged =
+      previous.grid !== renderVisibility.grid ||
+      previous.particles !== renderVisibility.particles ||
+      previous.ellipseSpokes !== renderVisibility.ellipseSpokes ||
+      previous.ellipses !== renderVisibility.ellipses ||
+      previous.ellipseLabels !== renderVisibility.ellipseLabels ||
+      previous.ellipseConnectors !== renderVisibility.ellipseConnectors;
+
+    if (wordEdgesChanged && fieldLayersChanged) {
+      redrawVisualsRef.current();
+    } else if (wordEdgesChanged) {
+      redrawForegroundRef.current();
+    } else if (fieldLayersChanged) {
+      redrawBackgroundRef.current();
+    }
   }, [renderVisibility]);
 
   useEffect(() => {
@@ -701,6 +700,8 @@ export default function DrawCanvas({
     let animationFrame = 0;
     const sims: Array<Simulation<WordNode, undefined>> = [];
     redrawVisualsRef.current = () => {};
+    redrawBackgroundRef.current = () => {};
+    redrawForegroundRef.current = () => {};
     redrawHeaderRef.current = () => {};
     onReadyChange?.(false);
     onBuildStateChange?.(true);
@@ -713,17 +714,51 @@ export default function DrawCanvas({
     };
 
     const render = async () => {
-      const fg = canvasRef.current;
-      const bg = bgRef.current;
-      const ctx = fg?.getContext('2d');
-      const bgctx = bg?.getContext('2d');
-      if (!fg || !bg || !ctx || !bgctx) {
+      const visibleFg = canvasRef.current;
+      const visibleBg = bgRef.current;
+      if (!visibleFg || !visibleBg) {
         finish(false);
         return;
       }
       const constrainedBuild = window.matchMedia(
         '(max-width: 1023px), (pointer: coarse)',
       ).matches;
+      // Render mobile format changes into a detached pair of canvases. Changing
+      // a visible canvas's backing dimensions clears it immediately, which left
+      // an empty specimen during slower queued builds. The completed layers are
+      // copied into the visible pair together at the end of the build.
+      const fg = constrainedBuild ? document.createElement('canvas') : visibleFg;
+      const bg = constrainedBuild ? document.createElement('canvas') : visibleBg;
+      fg.width = previewWidth;
+      fg.height = previewHeight;
+      bg.width = previewBgWidth;
+      bg.height = previewBgHeight;
+      const ctx = fg.getContext('2d');
+      const bgctx = bg.getContext('2d');
+      if (!ctx || !bgctx) {
+        finish(false);
+        return;
+      }
+      const presentForeground = () => {
+        if (!constrainedBuild || cancelled) return;
+        visibleFg.width = previewWidth;
+        visibleFg.height = previewHeight;
+        const visibleContext = visibleFg.getContext('2d');
+        if (!visibleContext) return;
+        visibleContext.clearRect(0, 0, previewWidth, previewHeight);
+        visibleContext.drawImage(fg, 0, 0);
+        visibleFg.dataset.wordOverlaps = fg.dataset.wordOverlaps ?? '';
+        visibleFg.dataset.renderStage = fg.dataset.renderStage ?? '';
+      };
+      const presentBackground = () => {
+        if (!constrainedBuild || cancelled) return;
+        visibleBg.width = previewBgWidth;
+        visibleBg.height = previewBgHeight;
+        const visibleContext = visibleBg.getContext('2d');
+        if (!visibleContext) return;
+        visibleContext.clearRect(0, 0, previewBgWidth, previewBgHeight);
+        visibleContext.drawImage(bg, 0, 0);
+      };
 
       try {
         const fontReady = document.fonts
@@ -743,12 +778,8 @@ export default function DrawCanvas({
         ]);
         if (cancelled) return;
 
-        if (fg.width !== previewWidth) fg.width = previewWidth;
-        if (fg.height !== previewHeight) fg.height = previewHeight;
         fg.dataset.wordOverlaps = 'settling';
         fg.dataset.renderStage = 'assets-ready';
-        if (bg.width !== previewBgWidth) bg.width = previewBgWidth;
-        if (bg.height !== previewBgHeight) bg.height = previewBgHeight;
         ctx.setTransform(previewResolution, 0, 0, previewResolution, 0, 0);
         bgctx.setTransform(previewResolution, 0, 0, previewResolution, 0, 0);
 
@@ -813,7 +844,11 @@ export default function DrawCanvas({
             },
           );
         };
-        redrawHeaderRef.current = drawPaperHeader;
+        redrawHeaderRef.current = () => {
+          drawPaperHeader();
+          if (constrainedBuild && !settled) return;
+          presentBackground();
+        };
         const drawBackground = () => {
           if (cancelled) return;
           const layers = visibilityRef.current;
@@ -1027,11 +1062,25 @@ export default function DrawCanvas({
         const drawSettledFrame = () => {
           if (constrainedBuild) drawBackground();
           drawFrame();
+          presentBackground();
+          presentForeground();
         };
         redrawVisualsRef.current = () => {
           if (constrainedBuild && !settled) return;
           drawBackground();
           drawFrame();
+          presentBackground();
+          presentForeground();
+        };
+        redrawBackgroundRef.current = () => {
+          if (constrainedBuild && !settled) return;
+          drawBackground();
+          presentBackground();
+        };
+        redrawForegroundRef.current = () => {
+          if (constrainedBuild && !settled) return;
+          drawFrame();
+          presentForeground();
         };
 
         const tickAll = (ticks: number) => {
@@ -1209,6 +1258,8 @@ export default function DrawCanvas({
       cancelled = true;
       window.cancelAnimationFrame(animationFrame);
       redrawVisualsRef.current = () => {};
+      redrawBackgroundRef.current = () => {};
+      redrawForegroundRef.current = () => {};
       redrawHeaderRef.current = () => {};
       sims.forEach((simulation) => simulation.stop());
       inspectionRegionsRef.current = [];
@@ -1271,15 +1322,11 @@ export default function DrawCanvas({
             <canvas
               ref={bgRef}
               className="absolute inset-0 z-[1] block"
-              width={previewBgWidth}
-              height={previewBgHeight}
               style={{ width: BG_WIDTH, height: BG_HEIGHT }}
             />
             <canvas
               ref={canvasRef}
               className="absolute z-[6] block"
-              width={previewWidth}
-              height={previewHeight}
               style={{
                 top: canvasOption.BG_TOP_MARGIN,
                 left: canvasOption.BG_SIDE_MARGIN,
