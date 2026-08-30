@@ -847,7 +847,7 @@ export default function DrawCanvas({
               document.fonts.load(`${canvasOption.WORD_SIZE}px Newsreader`),
               document.fonts.load(
                 `${canvasOption.WORD_SIZE}px "Star Glyphs"`,
-                '✦',
+                '✦✶',
               ),
               document.fonts.ready,
             ])

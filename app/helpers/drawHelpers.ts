@@ -19,8 +19,8 @@ const romanNumerals = [
 ];
 
 export const asciiStars = [
-  '✦',       // browser-safe replacement for the former 🟅 mark
-  '✶',       // six-pronged mark; intentionally uses the system fallback
+  '✦',
+  '✶',
   '·',
   '.',
 ];
@@ -45,7 +45,7 @@ export function punctToASCIIStar(punct: string): string {
   if (punct === ",") return "**";
   if (punct === ".") return "✶";
   if (punct === "!") return "✦";
-  if (punct === "?") return "🟅";
+  if (punct === "?") return "✦✶";
   if (punct === ";") return "***";
   if (punct === ":") return "****";
   return punct;
