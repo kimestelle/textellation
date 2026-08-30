@@ -1,7 +1,7 @@
 'use client';
 
 import dynamic from 'next/dynamic';
-import { useMemo, useRef, useState, useCallback, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react';
+import { useMemo, useRef, useState, useCallback, useEffect, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react';
 import {
   CANVAS_OPTIONS,
   CanvasOption,
@@ -34,6 +34,13 @@ function safeFilename(s: string) {
     .slice(0, 80);
 }
 
+type PendingSave = {
+  text: string;
+  header: string;
+  option: CanvasOption;
+  context?: SaveContext;
+};
+
 export default function Home() {
   const [passageText, setPassageText] = useState<string>(littlePrince.text);
   const [passageHeader, setPassageHeader] = useState<string>(littlePrince.header);
@@ -50,6 +57,7 @@ export default function Home() {
   const [railCollapsed, setRailCollapsed] = useState(false);
   const [compositionPreset, setCompositionPreset] = useState<CompositionPresetId>('baseline');
   const [compositionBusy, setCompositionBusy] = useState(false);
+  const [compositionQueued, setCompositionQueued] = useState(false);
   const [renderVisibility, setRenderVisibility] = useState<RenderVisibility>(
     DEFAULT_RENDER_VISIBILITY,
   );
@@ -59,6 +67,19 @@ export default function Home() {
   const liveCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const workspaceRef = useRef<HTMLDivElement | null>(null);
   const railResizeRef = useRef<{ startX: number; startWidth: number } | null>(null);
+  const passageTextRef = useRef(passageText);
+  const passageHeaderRef = useRef(passageHeader);
+  const canvasOptionRef = useRef(canvasOption);
+  const compositionBusyRef = useRef(false);
+  const applyingSaveRef = useRef(false);
+  const queuedSaveRef = useRef<PendingSave | null>(null);
+  const flushFrameRef = useRef<number | null>(null);
+
+  useEffect(() => () => {
+    if (flushFrameRef.current !== null) {
+      window.cancelAnimationFrame(flushFrameRef.current);
+    }
+  }, []);
   
   const exportCanvasHandler = useCallback(async () => {
     if (!renderReady) return;
@@ -160,12 +181,14 @@ export default function Home() {
     setRenderReady(false);
   }, []);
 
-  const handleSave = useCallback((
-    text: string,
-    header: string,
-    option: CanvasOption,
-    context?: SaveContext,
-  ) => {
+  const commitSave = useCallback((save: PendingSave) => {
+    const { text, header, option, context } = save;
+    applyingSaveRef.current = true;
+    compositionBusyRef.current = true;
+    setCompositionBusy(true);
+    passageTextRef.current = text;
+    passageHeaderRef.current = header;
+    canvasOptionRef.current = option;
     setRenderReady(false);
     setPassageText(text);
     setPassageHeader(header);
@@ -193,6 +216,68 @@ export default function Home() {
         }
       : current);
   }, []);
+
+  const flushQueuedSave = useCallback(() => {
+    if (compositionBusyRef.current || applyingSaveRef.current) return;
+    const queued = queuedSaveRef.current;
+    if (!queued) return;
+    queuedSaveRef.current = null;
+    setCompositionQueued(false);
+    commitSave(queued);
+  }, [commitSave]);
+
+  const handleBuildStateChange = useCallback((busy: boolean) => {
+    compositionBusyRef.current = busy;
+    setCompositionBusy(busy);
+    if (busy) return;
+
+    applyingSaveRef.current = false;
+    if (queuedSaveRef.current) setRenderReady(false);
+    if (flushFrameRef.current !== null) {
+      window.cancelAnimationFrame(flushFrameRef.current);
+    }
+    // Cleanup from an old renderer can report idle immediately before the new
+    // renderer reports busy. Waiting one frame prevents two builds from being
+    // admitted during that handoff.
+    flushFrameRef.current = window.requestAnimationFrame(() => {
+      flushFrameRef.current = null;
+      if (!compositionBusyRef.current) flushQueuedSave();
+    });
+  }, [flushQueuedSave]);
+
+  const handleSave = useCallback((
+    text: string,
+    header: string,
+    option: CanvasOption,
+    context?: SaveContext,
+  ) => {
+    const textChanged = text !== passageTextRef.current;
+    const formatChanged = option.id !== canvasOptionRef.current.id;
+    const headerChanged = header !== passageHeaderRef.current;
+
+    // The title belongs to the paper layer. Repaint it immediately without
+    // invalidating or rebuilding the constellation.
+    if (!textChanged && !formatChanged && context?.kind !== 'region-edit') {
+      if (queuedSaveRef.current) {
+        queuedSaveRef.current = null;
+        setCompositionQueued(false);
+      }
+      if (headerChanged) {
+        passageHeaderRef.current = header;
+        setPassageHeader(header);
+      }
+      return;
+    }
+
+    const pending = { text, header, option, context } satisfies PendingSave;
+    if (compositionBusyRef.current || applyingSaveRef.current) {
+      // One pending slot: every new edit replaces the stale queued snapshot.
+      queuedSaveRef.current = pending;
+      setCompositionQueued(true);
+      return;
+    }
+    commitSave(pending);
+  }, [commitSave]);
 
   const startRailResize = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
     railResizeRef.current = { startX: event.clientX, startWidth: railWidth };
@@ -243,7 +328,7 @@ export default function Home() {
                   canvasRef={canvasRef}
                   bgRef={bgRef}
                   onReadyChange={setRenderReady}
-                  onBuildStateChange={setCompositionBusy}
+                  onBuildStateChange={handleBuildStateChange}
                   onInspectionHover={handleInspectionHover}
                   onInspectionSelect={handleInspectionSelect}
                   activeInspection={activeInspection}
@@ -262,7 +347,7 @@ export default function Home() {
                   canvasOption={canvasOption}
                   canvasRef={liveCanvasRef}
                   onReadyChange={setRenderReady}
-                  onBuildStateChange={setCompositionBusy}
+                  onBuildStateChange={handleBuildStateChange}
                   onInspectionHover={handleInspectionHover}
                   onInspectionSelect={handleInspectionSelect}
                   activeInspection={activeInspection}
@@ -317,7 +402,8 @@ export default function Home() {
                 onRecomposeRegion={recomposeRegion}
                 onRecompose={recomposeCanvas}
                 compositionPreset={compositionPreset}
-                compositionBusy={compositionBusy}
+                compositionBusy={compositionBusy || compositionQueued}
+                compositionQueued={compositionQueued}
                 onCompositionPresetChange={handleCompositionPresetChange}
                 renderVisibility={renderVisibility}
                 onRenderVisibilityChange={setRenderVisibility}

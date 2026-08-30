@@ -50,6 +50,7 @@ type TextEditModalProps = {
   onRecompose?: () => void;
   compositionPreset?: CompositionPresetId;
   compositionBusy?: boolean;
+  compositionQueued?: boolean;
   onCompositionPresetChange?: (preset: CompositionPresetId) => void;
   renderVisibility?: RenderVisibility;
   onRenderVisibilityChange?: (visibility: RenderVisibility) => void;
@@ -57,6 +58,10 @@ type TextEditModalProps = {
 
 function draftSignature(text: string, header: string, option: CanvasOption) {
   return `${option.id}\u001f${header}\u001f${text}`;
+}
+
+function contentSignature(text: string, option: CanvasOption) {
+  return `${option.id}\u001f${text}`;
 }
 
 function countLabel(text: string, option: CanvasOption) {
@@ -85,6 +90,7 @@ export default function TextEditModal({
   onRecompose,
   compositionPreset = 'baseline',
   compositionBusy = false,
+  compositionQueued = false,
   onCompositionPresetChange,
   renderVisibility = DEFAULT_RENDER_VISIBILITY,
   onRenderVisibilityChange,
@@ -95,11 +101,15 @@ export default function TextEditModal({
   const [note, setNote] = useState<string>('');
   const [hoveredOption, setHoveredOption] = useState<CanvasOption | null>(null);
   const [isPreparing, setIsPreparing] = useState(false);
+  const [draftQueued, setDraftQueued] = useState(false);
   const [regionEdit, setRegionEdit] = useState<{ id: string; value: string } | null>(null);
   const [pendingPreset, setPendingPreset] = useState<CompositionPresetId | null>(null);
   const autoVersionRef = useRef(0);
   const lastSubmittedRef = useRef(
     draftSignature(littlePrince.text, littlePrince.header, CANVAS_OPTIONS[0]),
+  );
+  const lastPreparedContentRef = useRef(
+    contentSignature(littlePrince.text, CANVAS_OPTIONS[0]),
   );
   const shownOption = hoveredOption ?? canvasSetting;
   const selectedRegion = selectedInspection?.kind === 'region'
@@ -134,13 +144,29 @@ export default function TextEditModal({
     const signature = draftSignature(text, header, canvasSetting);
     if (signature === lastSubmittedRef.current) return;
     const version = ++autoVersionRef.current;
+    const nextContentSignature = contentSignature(text, canvasSetting);
+    const contentChanged = nextContentSignature !== lastPreparedContentRef.current;
+    const mobileEditing = window.matchMedia('(max-width: 767px), (pointer: coarse)').matches;
+    if (contentChanged && compositionBusy) {
+      setDraftQueued(true);
+      return;
+    }
+    setDraftQueued(false);
     const timer = window.setTimeout(async () => {
       const trimmedHeader = header.trim();
       if (!text.trim() || !trimmedHeader) {
         if (version !== autoVersionRef.current) return;
         lastSubmittedRef.current = signature;
+        lastPreparedContentRef.current = nextContentSignature;
         setIsPreparing(false);
         setNote('Add a header and some text to render the canvas.');
+        onSave(text, trimmedHeader, canvasSetting, { kind: 'automatic' });
+        return;
+      }
+
+      if (!contentChanged) {
+        lastSubmittedRef.current = signature;
+        setIsPreparing(false);
         onSave(text, trimmedHeader, canvasSetting, { kind: 'automatic' });
         return;
       }
@@ -163,6 +189,7 @@ export default function TextEditModal({
         setNote(parts.join(' '));
         if (!result.ok) return;
         lastSubmittedRef.current = signature;
+        lastPreparedContentRef.current = nextContentSignature;
         onSave(result.boundedText, trimmedHeader, canvasSetting, { kind: 'automatic' });
       } catch {
         if (version !== autoVersionRef.current) return;
@@ -170,13 +197,13 @@ export default function TextEditModal({
       } finally {
         if (version === autoVersionRef.current) setIsPreparing(false);
       }
-    }, 420);
+    }, contentChanged ? (mobileEditing ? 720 : 420) : 180);
 
     return () => window.clearTimeout(timer);
-  }, [canvasSetting, header, onSave, text]);
+  }, [canvasSetting, compositionBusy, header, onSave, text]);
 
   async function handleRegionApply() {
-    if (!selectedRegion || isPreparing) return;
+    if (!selectedRegion || isPreparing || compositionBusy) return;
     const nextParagraph = regionDraft.replace(/\s+/g, ' ').trim();
     if (!nextParagraph) {
       setNote('A selected region needs at least one word.');
@@ -218,6 +245,10 @@ export default function TextEditModal({
     lastSubmittedRef.current = draftSignature(
       result.boundedText,
       renderedHeader,
+      renderedCanvasOption,
+    );
+    lastPreparedContentRef.current = contentSignature(
+      result.boundedText,
       renderedCanvasOption,
     );
     onSave(result.boundedText, renderedHeader, renderedCanvasOption, {
@@ -327,7 +358,7 @@ export default function TextEditModal({
           type="button"
           className="no-format self-start text-neutral-200 disabled:cursor-not-allowed disabled:opacity-35"
           onClick={onRecompose}
-          disabled={isPreparing}
+          disabled={isPreparing || compositionBusy}
         >
           {'<recompose>'}
         </button>
@@ -350,10 +381,10 @@ export default function TextEditModal({
               className="min-h-24 w-full resize-y outline-none"
             />
             <div className="flex flex-wrap items-center justify-between gap-2">
-              <button type="button" className="no-format" onClick={() => void handleRegionApply()} disabled={isPreparing}>
+              <button type="button" className="no-format" onClick={() => void handleRegionApply()} disabled={isPreparing || compositionBusy}>
                 {isPreparing ? '<preparing…>' : '<apply region>'}
               </button>
-              <button type="button" className="no-format text-neutral-400" onClick={() => onRecomposeRegion?.(selectedRegion.paragraphIndex)}>
+              <button type="button" className="no-format text-neutral-400 disabled:cursor-not-allowed disabled:opacity-35" onClick={() => onRecomposeRegion?.(selectedRegion.paragraphIndex)} disabled={isPreparing || compositionBusy}>
                 {'<recompose region>'}
               </button>
             </div>
@@ -368,7 +399,13 @@ export default function TextEditModal({
         </div>
         <div className="flex items-center justify-between gap-3">
           <span className="status-signal text-[11px] text-neutral-500" role="status">
-            {isPreparing ? 'updating canvas…' : downloadDisabled ? 'canvas settling…' : 'canvas ready'}
+            {isPreparing
+              ? 'preparing text…'
+              : draftQueued || compositionQueued
+                ? 'latest change queued…'
+                : downloadDisabled
+                  ? 'canvas settling…'
+                  : 'canvas ready'}
           </span>
           <button
             type="button"

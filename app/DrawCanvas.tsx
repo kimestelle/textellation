@@ -303,11 +303,13 @@ export default function DrawCanvas({
   const stageRef = useRef<HTMLDivElement>(null);
   const zoomRef = useRef<HTMLDivElement | null>(null);
   const inspectionRegionsRef = useRef<InspectableRegion[]>([]);
+  const passageHeaderRef = useRef(passageHeader);
   const lastHitRef = useRef<CanvasInspection | null>(null);
   const lastHoverIdRef = useRef<string | null>(null);
   const restViewRef = useRef<FixedViewTransform>({ tx: 0, ty: 0, zoom: 1 });
   const visibilityRef = useRef(renderVisibility);
   const redrawVisualsRef = useRef<() => void>(() => {});
+  const redrawHeaderRef = useRef<() => void>(() => {});
   const [viewMode, setViewMode] = useState<FixedViewMode>('fit');
 
   const BG_WIDTH = canvasOption.W + 2 * canvasOption.BG_SIDE_MARGIN;
@@ -334,6 +336,12 @@ export default function DrawCanvas({
     visibilityRef.current = renderVisibility;
     redrawVisualsRef.current();
   }, [renderVisibility]);
+
+  useEffect(() => {
+    passageHeaderRef.current = passageHeader;
+    redrawHeaderRef.current();
+  }, [passageHeader]);
+
   const viewZoom = useMemo(() => {
     if (viewMode === 'fit') {
       return Math.min(BG_WIDTH / canvasOption.W, BG_HEIGHT / canvasOption.H);
@@ -623,6 +631,7 @@ export default function DrawCanvas({
     let animationFrame = 0;
     const sims: Array<Simulation<WordNode, undefined>> = [];
     redrawVisualsRef.current = () => {};
+    redrawHeaderRef.current = () => {};
     onReadyChange?.(false);
     onBuildStateChange?.(true);
 
@@ -711,6 +720,24 @@ export default function DrawCanvas({
         }));
 
         const fonts = makeFonts({ family: 'Newsreader', wordPx: canvasOption.WORD_SIZE });
+        const drawPaperHeader = () => {
+          if (cancelled) return;
+          bgctx.fillStyle = 'white';
+          bgctx.fillRect(0, 0, BG_WIDTH, IY);
+          if (!canvasOption.showTitle) return;
+          drawHeader(
+            bgctx,
+            passageHeaderRef.current,
+            canvasOption.BG_SIDE_MARGIN + canvasOption.MARGIN,
+            canvasOption.BG_TOP_MARGIN / 2,
+            {
+              font: fonts.headerFont(canvasOption.HEADER_SIZE),
+              color: '#000',
+              logicalCanvasWidth: BG_WIDTH,
+            },
+          );
+        };
+        redrawHeaderRef.current = drawPaperHeader;
         const drawBackground = () => {
           if (cancelled) return;
           const layers = visibilityRef.current;
@@ -785,19 +812,7 @@ export default function DrawCanvas({
           bgctx.fillRect(0, 0, IX, BG_HEIGHT);
           bgctx.fillRect(IX + IW, 0, BG_WIDTH - (IX + IW), BG_HEIGHT);
 
-          if (canvasOption.showTitle) {
-            drawHeader(
-              bgctx,
-              passageHeader,
-              canvasOption.BG_SIDE_MARGIN + canvasOption.MARGIN,
-              canvasOption.BG_TOP_MARGIN / 2,
-              {
-                font: fonts.headerFont(canvasOption.HEADER_SIZE),
-                color: '#000',
-                logicalCanvasWidth: BG_WIDTH,
-              },
-            );
-          }
+          drawPaperHeader();
           if (canvasOption.showText) {
             drawWrappedColumns(bgctx, passageText, {
               x: canvasOption.BG_SIDE_MARGIN + canvasOption.MARGIN,
@@ -1071,6 +1086,7 @@ export default function DrawCanvas({
       cancelled = true;
       window.cancelAnimationFrame(animationFrame);
       redrawVisualsRef.current = () => {};
+      redrawHeaderRef.current = () => {};
       sims.forEach((simulation) => simulation.stop());
       inspectionRegionsRef.current = [];
       onReadyChange?.(false);
@@ -1082,7 +1098,7 @@ export default function DrawCanvas({
     canvasOption, canvasRef, bgRef,
     compositionPreset,
     previewResolution, previewWidth, previewHeight, previewBgWidth, previewBgHeight,
-    passageHeader, passageText,
+    passageText,
     paragraphs, regionRevisions, compositionRevision, sizes, structure,
     dynamics, onBuildStateChange, onReadyChange,
   ]);

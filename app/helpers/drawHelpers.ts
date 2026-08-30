@@ -3,6 +3,7 @@ import { seededRandom } from "./randomHelpers";
 export const BLUE_HEX = '#272757';
 export const DEEPBLUEGREEN_HEX = '#121c2dff';
 export const REDGREEN_HEX = '#ffffff20';
+let radialGraphScratchCanvas: HTMLCanvasElement | null = null;
 
 function canvasMonoFamily() {
   if (typeof document === 'undefined') return '"Space Mono", monospace';
@@ -82,19 +83,35 @@ export function drawRadialGraph(
   const showLabel = opts?.showLabel ?? true;
 
   if (showSpokes) {
-    // 1. make an offscreen buffer just big enough for the ellipse bounds
-    const w = Math.ceil(rx * 2);
-    const h = Math.ceil(ry * 2);
-    const off = document.createElement('canvas');
-    off.width = w;
-    off.height = h;
+    // Bound each temporary spoke bitmap. Mobile Safari can retain recently
+    // released canvases for several frames, so sequential full-size ellipses
+    // can otherwise cross its process limit even though only one is live here.
+    const logicalW = rx * 2;
+    const logicalH = ry * 2;
+    const transform = ctx.getTransform();
+    const outputScale = Math.max(
+      Math.hypot(transform.a, transform.b),
+      Math.hypot(transform.c, transform.d),
+    );
+    const maxSpokePixels = 750_000;
+    const budgetScale = Math.sqrt(maxSpokePixels / Math.max(1, logicalW * logicalH));
+    const rasterScale = Math.max(0.25, Math.min(1, outputScale, budgetScale));
+    const w = Math.max(1, Math.ceil(logicalW * rasterScale));
+    const h = Math.max(1, Math.ceil(logicalH * rasterScale));
+    const off = radialGraphScratchCanvas ?? document.createElement('canvas');
+    radialGraphScratchCanvas = off;
+    if (off.width < w) off.width = w;
+    if (off.height < h) off.height = h;
     const octx = off.getContext('2d');
     if (!octx) return;
+    octx.setTransform(1, 0, 0, 1, 0, 0);
+    octx.clearRect(0, 0, off.width, off.height);
+    octx.setTransform(rasterScale, 0, 0, rasterScale, 0, 0);
 
     // 3. draw spokes centered at (w/2, h/2) on the offscreen
     octx.save();
     octx.beginPath();
-    octx.ellipse(w / 2, h / 2, rx, ry, 0, 0, Math.PI * 2);
+    octx.ellipse(logicalW / 2, logicalH / 2, rx, ry, 0, 0, Math.PI * 2);
     octx.clip();
 
     octx.strokeStyle = 'white';
@@ -105,10 +122,10 @@ export function drawRadialGraph(
     const r = Math.max(rx, ry);
     for (let i = 0; i < spokes; i++) {
       const a = (i / spokes) * Math.PI * 2;
-      const x2 = w / 2 + r * Math.cos(a);
-      const y2 = h / 2 + r * Math.sin(a);
+      const x2 = logicalW / 2 + r * Math.cos(a);
+      const y2 = logicalH / 2 + r * Math.sin(a);
       octx.beginPath();
-      octx.moveTo(w / 2, h / 2);
+      octx.moveTo(logicalW / 2, logicalH / 2);
       octx.lineTo(x2, y2);
       octx.stroke();
     }
@@ -119,7 +136,7 @@ export function drawRadialGraph(
 
     // build an elliptical gradient by scaling a circular one
     octx.save();
-    octx.translate(w / 2, h / 2);
+    octx.translate(logicalW / 2, logicalH / 2);
     octx.scale(1, ry / rx); // circle of radius rx → ellipse rx×ry
     const grad = octx.createRadialGradient(0, 0, 0, 0, 0, rx);
     grad.addColorStop(0.0, 'rgba(255,255,255,0.50)'); // 50% at center
@@ -133,7 +150,17 @@ export function drawRadialGraph(
     octx.restore();
     octx.globalCompositeOperation = 'source-over';
 
-    ctx.drawImage(off, Math.round(cx - rx), Math.round(cy - ry));
+    ctx.drawImage(
+      off,
+      0,
+      0,
+      w,
+      h,
+      Math.round(cx - rx),
+      Math.round(cy - ry),
+      logicalW,
+      logicalH,
+    );
   }
 
   if (showEllipse) {
@@ -175,10 +202,16 @@ export function drawRadialGraph(
   const roman = romanNumerals[index % romanNumerals.length];
 
   ctx.save();
-  ctx.font = `${labelSize}px newsreader, serif`;
-  ctx.fillStyle = 'rgba(255,255,255,0.58)';
+  ctx.font = `500 ${labelSize}px Newsreader, serif`;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
+
+  // A restrained deboss: the pale offset catches the lower edge while the
+  // multiplied face sinks into the field. The later noise pass unifies both.
+  ctx.fillStyle = 'rgba(255,255,255,0.09)';
+  ctx.fillText(roman, labelX + 1.5, labelY + 1.5);
+  ctx.globalCompositeOperation = 'multiply';
+  ctx.fillStyle = 'rgba(22,18,42,0.58)';
   ctx.fillText(roman, labelX, labelY);
   ctx.restore();
 }
