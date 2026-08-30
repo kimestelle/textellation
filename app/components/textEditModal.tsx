@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type SetStateAction } from 'react';
 import { littlePrince, lookingGlass } from '../settings/examples';
 import { CANVAS_OPTIONS, CanvasOption } from '../settings/canvasOptions';
 import {
@@ -41,6 +41,7 @@ type TextEditModalProps = {
   onDownload?: () => void;
   downloadLabel?: string;
   downloadDisabled?: boolean;
+  renderError?: string | null;
   renderedText: string;
   renderedHeader: string;
   renderedCanvasOption: CanvasOption;
@@ -53,7 +54,7 @@ type TextEditModalProps = {
   compositionQueued?: boolean;
   onCompositionPresetChange?: (preset: CompositionPresetId) => void;
   renderVisibility?: RenderVisibility;
-  onRenderVisibilityChange?: (visibility: RenderVisibility) => void;
+  onRenderVisibilityChange?: (update: SetStateAction<RenderVisibility>) => void;
 };
 
 function draftSignature(text: string, header: string, option: CanvasOption) {
@@ -81,6 +82,7 @@ export default function TextEditModal({
   onDownload,
   downloadLabel = 'download image',
   downloadDisabled = false,
+  renderError = null,
   renderedText,
   renderedHeader,
   renderedCanvasOption,
@@ -95,9 +97,9 @@ export default function TextEditModal({
   renderVisibility = DEFAULT_RENDER_VISIBILITY,
   onRenderVisibilityChange,
 }: TextEditModalProps) {
-  const [text, setText] = useState<string>(littlePrince.text);
-  const [header, setHeader] = useState<string>(littlePrince.header);
-  const [canvasSetting, setCanvasSetting] = useState<CanvasOption>(CANVAS_OPTIONS[0]);
+  const [text, setText] = useState<string>(renderedText);
+  const [header, setHeader] = useState<string>(renderedHeader);
+  const [canvasSetting, setCanvasSetting] = useState<CanvasOption>(renderedCanvasOption);
   const [note, setNote] = useState<string>('');
   const [hoveredOption, setHoveredOption] = useState<CanvasOption | null>(null);
   const [isPreparing, setIsPreparing] = useState(false);
@@ -106,10 +108,10 @@ export default function TextEditModal({
   const [pendingPreset, setPendingPreset] = useState<CompositionPresetId | null>(null);
   const autoVersionRef = useRef(0);
   const lastSubmittedRef = useRef(
-    draftSignature(littlePrince.text, littlePrince.header, CANVAS_OPTIONS[0]),
+    draftSignature(renderedText, renderedHeader, renderedCanvasOption),
   );
   const lastPreparedContentRef = useRef(
-    contentSignature(littlePrince.text, CANVAS_OPTIONS[0]),
+    contentSignature(renderedText, renderedCanvasOption),
   );
   const shownOption = hoveredOption ?? canvasSetting;
   const selectedRegion = selectedInspection?.kind === 'region'
@@ -142,6 +144,7 @@ export default function TextEditModal({
     const version = ++autoVersionRef.current;
     const nextContentSignature = contentSignature(text, canvasSetting);
     const contentChanged = nextContentSignature !== lastPreparedContentRef.current;
+    const formatChanged = canvasSetting.id !== renderedCanvasOption.id;
     const mobileEditing = window.matchMedia('(max-width: 767px), (pointer: coarse)').matches;
     if (contentChanged && compositionBusy) {
       setDraftQueued(true);
@@ -202,10 +205,10 @@ export default function TextEditModal({
       } finally {
         if (version === autoVersionRef.current) setIsPreparing(false);
       }
-    }, contentChanged ? (mobileEditing ? 720 : 420) : 180);
+    }, formatChanged ? 80 : contentChanged ? (mobileEditing ? 720 : 420) : 180);
 
     return () => window.clearTimeout(timer);
-  }, [canvasSetting, compositionBusy, header, onSave, text]);
+  }, [canvasSetting, compositionBusy, header, onSave, renderedCanvasOption.id, text]);
 
   async function handleRegionApply() {
     if (!selectedRegion || isPreparing || compositionBusy) return;
@@ -329,6 +332,7 @@ export default function TextEditModal({
                 aria-pressed={active}
                 className="canvas-option no-format group flex w-full items-center gap-3 py-1 text-left outline-none focus-visible:ring-1 focus-visible:ring-white/60"
                 onClick={() => {
+                  if (option.id !== canvasSetting.id) setIsPreparing(true);
                   setCanvasSetting(option);
                   setNote('');
                 }}
@@ -399,6 +403,8 @@ export default function TextEditModal({
               ? 'preparing text…'
               : draftQueued || compositionQueued
                 ? 'latest change queued…'
+                : renderError
+                  ? renderError
                 : downloadDisabled
                   ? 'canvas settling…'
                   : 'canvas ready'}
@@ -478,10 +484,13 @@ export default function TextEditModal({
                       type="button"
                       className={`no-format text-left ${visible ? 'text-white' : 'text-white/30'}`}
                       aria-pressed={visible}
-                      onClick={() => onRenderVisibilityChange?.({
-                        ...renderVisibility,
-                        [choice.id]: !visible,
-                      })}
+                      onClick={() => {
+                        setPendingPreset(null);
+                        onRenderVisibilityChange?.((current) => ({
+                          ...current,
+                          [choice.id]: !current[choice.id],
+                        }));
+                      }}
                     >
                       [{choice.label}]
                     </button>
@@ -493,7 +502,10 @@ export default function TextEditModal({
           <button
             type="button"
             className="no-format self-end text-neutral-300"
-            onClick={() => onRenderVisibilityChange?.({ ...DEFAULT_RENDER_VISIBILITY })}
+            onClick={() => {
+              setPendingPreset(null);
+              onRenderVisibilityChange?.({ ...DEFAULT_RENDER_VISIBILITY });
+            }}
           >
             {'<show all>'}
           </button>

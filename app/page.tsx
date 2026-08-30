@@ -1,7 +1,7 @@
 'use client';
 
 import dynamic from 'next/dynamic';
-import { useMemo, useRef, useState, useCallback, useEffect, useLayoutEffect, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react';
+import { useMemo, useRef, useState, useCallback, useEffect, useLayoutEffect, type CSSProperties, type PointerEvent as ReactPointerEvent, type SetStateAction } from 'react';
 import {
   CANVAS_OPTIONS,
   CanvasOption,
@@ -41,6 +41,71 @@ type PendingSave = {
   context?: SaveContext;
 };
 
+type EditorSessionSnapshot = {
+  version: 1;
+  activated: boolean;
+  text: string;
+  header: string;
+  canvasOptionId: string;
+  compositionPreset: CompositionPresetId;
+  renderVisibility: RenderVisibility;
+};
+
+const EDITOR_SESSION_KEY = 'textellation.editor-session.v1';
+const VISIBILITY_KEYS: Array<keyof RenderVisibility> = [
+  'grid',
+  'particles',
+  'ellipseSpokes',
+  'ellipses',
+  'ellipseLabels',
+  'ellipseConnectors',
+  'orderEdges',
+  'punctuationEdges',
+  'strongPosEdges',
+  'weakPosEdges',
+];
+
+function readEditorSession(): EditorSessionSnapshot | null {
+  try {
+    const raw = window.sessionStorage.getItem(EDITOR_SESSION_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<EditorSessionSnapshot>;
+    const optionExists = CANVAS_OPTIONS.some(
+      (option) => option.id === parsed.canvasOptionId,
+    );
+    const presetExists = Boolean(
+      parsed.compositionPreset && PRESET_RENDER_VISIBILITY[parsed.compositionPreset],
+    );
+    const visibility = parsed.renderVisibility;
+    const visibilityIsValid = Boolean(
+      visibility && VISIBILITY_KEYS.every((key) => typeof visibility[key] === 'boolean'),
+    );
+    if (
+      parsed.version !== 1 ||
+      parsed.activated !== true ||
+      typeof parsed.text !== 'string' ||
+      typeof parsed.header !== 'string' ||
+      !optionExists ||
+      !presetExists ||
+      !visibilityIsValid
+    ) {
+      return null;
+    }
+    return parsed as EditorSessionSnapshot;
+  } catch {
+    return null;
+  }
+}
+
+function writeEditorSession(snapshot: EditorSessionSnapshot) {
+  try {
+    window.sessionStorage.setItem(EDITOR_SESSION_KEY, JSON.stringify(snapshot));
+  } catch {
+    // Storage can be unavailable in strict/private browser modes. Rendering
+    // remains fully functional; only crash recovery is skipped.
+  }
+}
+
 export default function Home() {
   const [passageText, setPassageText] = useState<string>(littlePrince.text);
   const [passageHeader, setPassageHeader] = useState<string>(littlePrince.header);
@@ -49,6 +114,7 @@ export default function Home() {
   const [infoOpen, setInfoOpen] = useState<boolean>(true);
   const [canvasActivated, setCanvasActivated] = useState<boolean>(false);
   const [renderReady, setRenderReady] = useState<boolean>(false);
+  const [renderError, setRenderError] = useState<string | null>(null);
   const [hoveredInspection, setHoveredInspection] = useState<CanvasInspection | null>(null);
   const [selectedInspection, setSelectedInspection] = useState<CanvasInspection | null>(null);
   const [regionRevisions, setRegionRevisions] = useState<Record<number, number>>({});
@@ -64,6 +130,7 @@ export default function Home() {
   const [appliedRenderVisibility, setAppliedRenderVisibility] = useState<RenderVisibility>(
     PRESET_RENDER_VISIBILITY.baseline,
   );
+  const [editorSessionRestored, setEditorSessionRestored] = useState(false);
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const bgRef = useRef<HTMLCanvasElement | null>(null);
@@ -80,6 +147,50 @@ export default function Home() {
   const specimenScrollFrameRef = useRef<number | null>(null);
   const exportBusyRef = useRef(false);
   const visibilityTimerRef = useRef<number | null>(null);
+  const renderVisibilityRef = useRef(renderVisibility);
+  const editorSessionRef = useRef<EditorSessionSnapshot>({
+    version: 1,
+    activated: false,
+    text: littlePrince.text,
+    header: littlePrince.header,
+    canvasOptionId: CANVAS_OPTIONS[0].id,
+    compositionPreset: 'baseline',
+    renderVisibility: { ...PRESET_RENDER_VISIBILITY.baseline },
+  });
+
+  const persistEditorSession = useCallback((patch: Partial<EditorSessionSnapshot>) => {
+    const next = { ...editorSessionRef.current, ...patch };
+    editorSessionRef.current = next;
+    if (next.activated) writeEditorSession(next);
+  }, []);
+
+  useEffect(() => {
+    const restored = readEditorSession();
+    if (!restored) return;
+    const restoredOption = CANVAS_OPTIONS.find(
+      (option) => option.id === restored.canvasOptionId,
+    );
+    if (!restoredOption) return;
+
+    const restoreFrame = window.requestAnimationFrame(() => {
+      editorSessionRef.current = restored;
+      passageTextRef.current = restored.text;
+      passageHeaderRef.current = restored.header;
+      canvasOptionRef.current = restoredOption;
+      renderVisibilityRef.current = restored.renderVisibility;
+      setPassageText(restored.text);
+      setPassageHeader(restored.header);
+      setCanvasOption(restoredOption);
+      setCompositionPreset(restored.compositionPreset);
+      setRenderVisibility(restored.renderVisibility);
+      setAppliedRenderVisibility(restored.renderVisibility);
+      setEditorSessionRestored(true);
+      setInfoOpen(false);
+      setCanvasActivated(true);
+      setRenderReady(false);
+    });
+    return () => window.cancelAnimationFrame(restoreFrame);
+  }, []);
 
   useEffect(() => () => {
     if (flushFrameRef.current !== null) {
@@ -205,6 +316,7 @@ export default function Home() {
       [paragraphIndex]: (current[paragraphIndex] ?? 0) + 1,
     }));
     setHoveredInspection(null);
+    setRenderError(null);
     setRenderReady(false);
   }, []);
 
@@ -213,6 +325,7 @@ export default function Home() {
     setRegionRevisions({});
     setHoveredInspection(null);
     setSelectedInspection(null);
+    setRenderError(null);
     setRenderReady(false);
   }, []);
 
@@ -221,36 +334,48 @@ export default function Home() {
   }, []);
 
   const handleCompositionPresetChange = useCallback((preset: CompositionPresetId) => {
+    if (preset === compositionPreset) return;
     if (visibilityTimerRef.current !== null) {
       window.clearTimeout(visibilityTimerRef.current);
       visibilityTimerRef.current = null;
     }
     const presetVisibility = { ...PRESET_RENDER_VISIBILITY[preset] };
+    renderVisibilityRef.current = presetVisibility;
     setRenderVisibility(presetVisibility);
     setAppliedRenderVisibility(presetVisibility);
-    if (preset === compositionPreset) return;
+    persistEditorSession({
+      compositionPreset: preset,
+      renderVisibility: presetVisibility,
+    });
     setCompositionPreset(preset);
     setHoveredInspection(null);
     setSelectedInspection(null);
+    setRenderError(null);
     setRenderReady(false);
-  }, [compositionPreset]);
+  }, [compositionPreset, persistEditorSession]);
 
-  const handleRenderVisibilityChange = useCallback((next: RenderVisibility) => {
+  const handleRenderVisibilityChange = useCallback((update: SetStateAction<RenderVisibility>) => {
+    const next = typeof update === 'function'
+      ? update(renderVisibilityRef.current)
+      : update;
+    renderVisibilityRef.current = next;
     setRenderVisibility(next);
+    persistEditorSession({ renderVisibility: next });
+    if (visibilityTimerRef.current !== null) {
+      window.clearTimeout(visibilityTimerRef.current);
+      visibilityTimerRef.current = null;
+    }
     if (!window.matchMedia('(max-width: 1023px), (pointer: coarse)').matches) {
       setAppliedRenderVisibility(next);
       return;
-    }
-    if (visibilityTimerRef.current !== null) {
-      window.clearTimeout(visibilityTimerRef.current);
     }
     // Knob labels respond immediately; the expensive canvas paint is trailing
     // and latest-only so a run of taps cannot queue multiple mobile redraws.
     visibilityTimerRef.current = window.setTimeout(() => {
       visibilityTimerRef.current = null;
-      setAppliedRenderVisibility(next);
+      setAppliedRenderVisibility(renderVisibilityRef.current);
     }, 220);
-  }, []);
+  }, [persistEditorSession]);
 
   const commitSave = useCallback((save: PendingSave) => {
     const { text, header, option, context } = save;
@@ -261,10 +386,16 @@ export default function Home() {
     passageTextRef.current = text;
     passageHeaderRef.current = header;
     canvasOptionRef.current = option;
+    setRenderError(null);
     setRenderReady(false);
     setPassageText(text);
     setPassageHeader(header);
     setCanvasOption(option);
+    persistEditorSession({
+      text,
+      header,
+      canvasOptionId: option.id,
+    });
     setHoveredInspection(null);
     if (formatChanged && window.matchMedia('(max-width: 1023px)').matches) {
       if (specimenScrollFrameRef.current !== null) {
@@ -298,7 +429,7 @@ export default function Home() {
           nodeCount,
         }
       : current);
-  }, []);
+  }, [persistEditorSession]);
 
   const flushQueuedSave = useCallback(() => {
     if (compositionBusyRef.current || applyingSaveRef.current) return;
@@ -312,7 +443,10 @@ export default function Home() {
   const handleBuildStateChange = useCallback((busy: boolean) => {
     compositionBusyRef.current = busy;
     setCompositionBusy(busy);
-    if (busy) return;
+    if (busy) {
+      setRenderError(null);
+      return;
+    }
 
     applyingSaveRef.current = false;
     if (queuedSaveRef.current) setRenderReady(false);
@@ -348,6 +482,7 @@ export default function Home() {
       if (headerChanged) {
         passageHeaderRef.current = header;
         setPassageHeader(header);
+        persistEditorSession({ header });
       }
       return;
     }
@@ -360,7 +495,7 @@ export default function Home() {
       return;
     }
     commitSave(pending);
-  }, [commitSave]);
+  }, [commitSave, persistEditorSession]);
 
   const startRailResize = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
     railResizeRef.current = { startX: event.clientX, startWidth: railWidth };
@@ -432,6 +567,7 @@ export default function Home() {
                   bgRef={bgRef}
                   onReadyChange={setRenderReady}
                   onBuildStateChange={handleBuildStateChange}
+                  onRenderError={setRenderError}
                   onInspectionHover={handleInspectionHover}
                   onInspectionSelect={handleInspectionSelect}
                   activeInspection={activeInspection}
@@ -486,13 +622,14 @@ export default function Home() {
               style={{ '--rail-width': railCollapsed ? '0px' : `${railWidth}px` } as CSSProperties}
               aria-label="Textellation controls"
             >
-            {!railCollapsed && (
-              <div className="h-auto pr-1 pt-7 lg:h-full lg:overflow-y-auto">
+              <div className={`${railCollapsed ? 'hidden' : 'block'} h-auto pr-1 pt-7 lg:h-full lg:overflow-y-auto`}>
             <TextEditModal
+                key={editorSessionRestored ? 'restored-editor' : 'editor'}
                 onSave={handleSave}
                 onDownload={exportCanvasHandler}
                 downloadLabel={canvasOption.kind === 'infinite' ? 'download view' : 'download image'}
                 downloadDisabled={!renderReady}
+                renderError={renderError}
                 renderedText={passageText}
                 renderedHeader={passageHeader}
                 renderedCanvasOption={canvasOption}
@@ -511,7 +648,6 @@ export default function Home() {
                 onRenderVisibilityChange={handleRenderVisibilityChange}
             />
               </div>
-            )}
             </aside>
         </div>
         </div>
@@ -522,6 +658,7 @@ export default function Home() {
             setInfoOpen(false);
             setCanvasActivated(true);
             setRenderReady(false);
+            persistEditorSession({ activated: true });
           }}
         />
     </div>

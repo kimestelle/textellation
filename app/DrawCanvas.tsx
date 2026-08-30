@@ -61,6 +61,7 @@ type CanvasProps = {
   bgRef: React.RefObject<HTMLCanvasElement | null>;
   onReadyChange?: (ready: boolean) => void;
   onBuildStateChange?: (busy: boolean) => void;
+  onRenderError?: (message: string | null) => void;
   onInspectionHover?: (inspection: CanvasInspection | null) => void;
   onInspectionSelect?: (inspection: CanvasInspection | null) => void;
   activeInspection?: CanvasInspection | null;
@@ -119,6 +120,22 @@ function loadCanvasImage(src: string) {
   })();
   imagePromises.set(src, promise);
   return promise;
+}
+
+function resolveWithin<T>(promise: Promise<T>, fallback: T, timeoutMs: number) {
+  return new Promise<T>((resolve) => {
+    const timer = window.setTimeout(() => resolve(fallback), timeoutMs);
+    promise.then(
+      (value) => {
+        window.clearTimeout(timer);
+        resolve(value);
+      },
+      () => {
+        window.clearTimeout(timer);
+        resolve(fallback);
+      },
+    );
+  });
 }
 
 type CollisionGroup = {
@@ -296,6 +313,7 @@ export default function DrawCanvas({
   bgRef,
   onReadyChange,
   onBuildStateChange,
+  onRenderError,
   onInspectionHover,
   onInspectionSelect,
   activeInspection,
@@ -338,8 +356,21 @@ export default function DrawCanvas({
     if (typeof window === 'undefined') return 1;
     const mobileViewport = window.matchMedia('(max-width: 1023px)').matches;
     const coarsePointer = window.matchMedia('(pointer: coarse)').matches;
-    return mobileViewport || coarsePointer ? 0.5 : 1;
-  }, []);
+    if (!mobileViewport && !coarsePointer) return 1;
+
+    // Bound the two visible layers and the temporary swap layers together.
+    // The large poster otherwise retains more than 24 MB of canvas backing
+    // stores during a format change, before Safari accounts for textures and
+    // compositing surfaces. Smaller formats can keep the sharper 0.5 preview.
+    const logicalPixels =
+      canvasOption.W * canvasOption.H + BG_WIDTH * BG_HEIGHT;
+    const pixelBudgetScale = Math.sqrt(1_600_000 / logicalPixels);
+    const dimensionBudgetScale = 1152 / Math.max(BG_WIDTH, BG_HEIGHT);
+    return Math.max(
+      0.25,
+      Math.min(0.5, pixelBudgetScale, dimensionBudgetScale),
+    );
+  }, [BG_HEIGHT, BG_WIDTH, canvasOption.H, canvasOption.W]);
   const previewWidth = Math.max(1, Math.round(canvasOption.W * previewResolution));
   const previewHeight = Math.max(1, Math.round(canvasOption.H * previewResolution));
   const previewBgWidth = Math.max(1, Math.round(BG_WIDTH * previewResolution));
@@ -698,11 +729,13 @@ export default function DrawCanvas({
     let cancelled = false;
     let settled = false;
     let animationFrame = 0;
+    let releaseRenderBuffers = () => {};
     const sims: Array<Simulation<WordNode, undefined>> = [];
     redrawVisualsRef.current = () => {};
     redrawBackgroundRef.current = () => {};
     redrawForegroundRef.current = () => {};
     redrawHeaderRef.current = () => {};
+    onRenderError?.(null);
     onReadyChange?.(false);
     onBuildStateChange?.(true);
 
@@ -717,6 +750,7 @@ export default function DrawCanvas({
       const visibleFg = canvasRef.current;
       const visibleBg = bgRef.current;
       if (!visibleFg || !visibleBg) {
+        onRenderError?.('canvas is unavailable');
         finish(false);
         return;
       }
@@ -727,37 +761,69 @@ export default function DrawCanvas({
       // a visible canvas's backing dimensions clears it immediately, which left
       // an empty specimen during slower queued builds. The completed layers are
       // copied into the visible pair together at the end of the build.
-      const fg = constrainedBuild ? document.createElement('canvas') : visibleFg;
-      const bg = constrainedBuild ? document.createElement('canvas') : visibleBg;
+      const stagingFg = constrainedBuild ? document.createElement('canvas') : visibleFg;
+      const stagingBg = constrainedBuild ? document.createElement('canvas') : visibleBg;
+      let fg = stagingFg;
+      let bg = stagingBg;
+      let staging = constrainedBuild;
       fg.width = previewWidth;
       fg.height = previewHeight;
       bg.width = previewBgWidth;
       bg.height = previewBgHeight;
-      const ctx = fg.getContext('2d');
-      const bgctx = bg.getContext('2d');
-      if (!ctx || !bgctx) {
+      const releaseStagingBuffers = () => {
+        if (!constrainedBuild) return;
+        stagingFg.width = 1;
+        stagingFg.height = 1;
+        stagingBg.width = 1;
+        stagingBg.height = 1;
+      };
+      releaseRenderBuffers = releaseStagingBuffers;
+      const initialContext = fg.getContext('2d');
+      const initialBackgroundContext = bg.getContext('2d');
+      if (!initialContext || !initialBackgroundContext) {
+        releaseStagingBuffers();
+        onRenderError?.('canvas is unavailable');
         finish(false);
         return;
       }
-      const presentForeground = () => {
-        if (!constrainedBuild || cancelled) return;
-        visibleFg.width = previewWidth;
-        visibleFg.height = previewHeight;
-        const visibleContext = visibleFg.getContext('2d');
-        if (!visibleContext) return;
-        visibleContext.clearRect(0, 0, previewWidth, previewHeight);
-        visibleContext.drawImage(fg, 0, 0);
-        visibleFg.dataset.wordOverlaps = fg.dataset.wordOverlaps ?? '';
-        visibleFg.dataset.renderStage = fg.dataset.renderStage ?? '';
-      };
-      const presentBackground = () => {
-        if (!constrainedBuild || cancelled) return;
-        visibleBg.width = previewBgWidth;
-        visibleBg.height = previewBgHeight;
-        const visibleContext = visibleBg.getContext('2d');
-        if (!visibleContext) return;
-        visibleContext.clearRect(0, 0, previewBgWidth, previewBgHeight);
-        visibleContext.drawImage(bg, 0, 0);
+      let ctx: CanvasRenderingContext2D = initialContext;
+      let bgctx: CanvasRenderingContext2D = initialBackgroundContext;
+      const presentSettledBuffers = () => {
+        if (!staging) return true;
+        if (cancelled) return false;
+        try {
+          const visibleContext = visibleFg.getContext('2d');
+          const visibleBackgroundContext = visibleBg.getContext('2d');
+          if (!visibleContext || !visibleBackgroundContext) return false;
+
+          // Resize and paint both visible layers in the same task so the browser
+          // cannot show a half-swapped poster between animation frames.
+          visibleBg.width = previewBgWidth;
+          visibleBg.height = previewBgHeight;
+          visibleFg.width = previewWidth;
+          visibleFg.height = previewHeight;
+          visibleBackgroundContext.clearRect(0, 0, previewBgWidth, previewBgHeight);
+          visibleBackgroundContext.drawImage(stagingBg, 0, 0);
+          visibleContext.clearRect(0, 0, previewWidth, previewHeight);
+          visibleContext.drawImage(stagingFg, 0, 0);
+          visibleFg.dataset.wordOverlaps = stagingFg.dataset.wordOverlaps ?? '';
+          visibleFg.dataset.renderStage = stagingFg.dataset.renderStage ?? '';
+
+          // Future visibility/header paints go straight to the visible pair.
+          // Releasing the detached pair here prevents every settled poster from
+          // permanently retaining a second full set of mobile canvas buffers.
+          fg = visibleFg;
+          bg = visibleBg;
+          ctx = visibleContext;
+          bgctx = visibleBackgroundContext;
+          ctx.setTransform(previewResolution, 0, 0, previewResolution, 0, 0);
+          bgctx.setTransform(previewResolution, 0, 0, previewResolution, 0, 0);
+          staging = false;
+          releaseStagingBuffers();
+          return true;
+        } catch {
+          return false;
+        }
       };
 
       try {
@@ -771,11 +837,15 @@ export default function DrawCanvas({
               document.fonts.ready,
             ])
           : Promise.resolve();
-        const [, noise, compass] = await Promise.all([
-          fontReady,
-          loadCanvasImage('/noisy.png'),
-          canvasOption.showText ? loadCanvasImage('/compass.png') : Promise.resolve(null),
-        ]);
+        const [, noise, compass] = await resolveWithin(
+          Promise.all([
+            fontReady,
+            loadCanvasImage('/noisy.png'),
+            canvasOption.showText ? loadCanvasImage('/compass.png') : Promise.resolve(null),
+          ]),
+          [undefined, null, null] as [undefined, null, null],
+          2500,
+        );
         if (cancelled) return;
 
         fg.dataset.wordOverlaps = 'settling';
@@ -787,11 +857,16 @@ export default function DrawCanvas({
         const IY = INNER_Y;
         const IW = canvasOption.W;
         const IH = canvasOption.H;
-        const packed = tightPack(
+        const packAtScale = (scaleFactor: number) => tightPack(
           IW - 2 * canvasOption.MARGIN,
           IH - 2 * canvasOption.MARGIN,
           canvasOption.WORD_SIZE,
-          sizes,
+          scaleFactor === 1
+            ? sizes
+            : sizes.map((size) => ({
+                rx: size.rx * scaleFactor,
+                ry: size.ry * scaleFactor,
+              })),
           {
             gridStep: Math.max(24, Math.round(canvasOption.WORD_SIZE * 1.5)),
             areaSlack: 0.78,
@@ -802,6 +877,16 @@ export default function DrawCanvas({
           10,
           1.0015,
         );
+        let packed = packAtScale(1);
+        // Wide presets such as Field can legitimately exceed a compact output
+        // format even after the text itself passes validation. Preserve the
+        // preset's relative geometry, but shrink its regions until the selected
+        // card has a valid packing instead of leaving the renderer terminally
+        // blank.
+        for (const fallbackScale of [0.86, 0.72, 0.6, 0.5]) {
+          if (packed !== 'FAIL') break;
+          packed = packAtScale(fallbackScale);
+        }
 
         if (packed === 'FAIL') {
           fg.dataset.renderStage = 'pack-failed';
@@ -813,6 +898,8 @@ export default function DrawCanvas({
           ctx.fillStyle = '#b00020';
           ctx.font = `${canvasOption.WORD_SIZE * 2}px Newsreader`;
           ctx.fillText('Content cannot fit, please enter a shorter passage.', 40, 100);
+          releaseStagingBuffers();
+          onRenderError?.('canvas could not fit this format');
           finish(false);
           return;
         }
@@ -846,8 +933,6 @@ export default function DrawCanvas({
         };
         redrawHeaderRef.current = () => {
           drawPaperHeader();
-          if (constrainedBuild && !settled) return;
-          presentBackground();
         };
         const drawBackground = () => {
           if (cancelled) return;
@@ -1060,27 +1145,29 @@ export default function DrawCanvas({
           }
         };
         const drawSettledFrame = () => {
-          if (constrainedBuild) drawBackground();
-          drawFrame();
-          presentBackground();
-          presentForeground();
+          try {
+            if (constrainedBuild) drawBackground();
+            drawFrame();
+            if (presentSettledBuffers()) return true;
+          } catch {
+            // Report below with the same recoverable terminal state.
+          }
+          releaseStagingBuffers();
+          onRenderError?.('canvas could not finish this format');
+          return false;
         };
         redrawVisualsRef.current = () => {
           if (constrainedBuild && !settled) return;
           drawBackground();
           drawFrame();
-          presentBackground();
-          presentForeground();
         };
         redrawBackgroundRef.current = () => {
           if (constrainedBuild && !settled) return;
           drawBackground();
-          presentBackground();
         };
         redrawForegroundRef.current = () => {
           if (constrainedBuild && !settled) return;
           drawFrame();
-          presentForeground();
         };
 
         const tickAll = (ticks: number) => {
@@ -1154,6 +1241,8 @@ export default function DrawCanvas({
             ctx.fillStyle = '#f0b4b4';
             ctx.font = '24px Newsreader, serif';
             ctx.fillText('This passage is too dense to place without overlap.', 40, 80);
+            releaseStagingBuffers();
+            onRenderError?.('canvas could not place this passage without overlap');
             finish(false);
             return false;
           }
@@ -1195,6 +1284,8 @@ export default function DrawCanvas({
             ctx.fillStyle = '#f0b4b4';
             ctx.font = '24px Newsreader, serif';
             ctx.fillText('This passage is too dense to place without overlap.', 40, 80);
+            releaseStagingBuffers();
+            onRenderError?.('canvas could not place this passage without overlap');
             finish(false);
             return false;
           }
@@ -1206,14 +1297,14 @@ export default function DrawCanvas({
           tickAll(32);
           if (fieldLayout) {
             if (await finishFieldCollisions()) {
-              drawSettledFrame();
-              finish(true);
+              const ready = drawSettledFrame();
+              finish(ready);
             }
             return;
           }
           if (finishCollisions()) {
-            drawSettledFrame();
-            finish(true);
+            const ready = drawSettledFrame();
+            finish(ready);
           }
           return;
         }
@@ -1230,14 +1321,14 @@ export default function DrawCanvas({
             if (fieldLayout) {
               void finishFieldCollisions().then((ready) => {
                 if (!ready || cancelled) return;
-                drawSettledFrame();
-                finish(true);
+                const presented = drawSettledFrame();
+                finish(presented);
               });
               return;
             }
             if (finishCollisions()) {
-              drawSettledFrame();
-              finish(true);
+              const ready = drawSettledFrame();
+              finish(ready);
             }
           }
         };
@@ -1249,6 +1340,8 @@ export default function DrawCanvas({
         ctx.fillStyle = '#f0b4b4';
         ctx.font = '24px Newsreader, serif';
         ctx.fillText('The canvas could not render. Try a shorter passage.', 40, 80);
+        releaseStagingBuffers();
+        onRenderError?.('canvas could not render this format');
         finish(false);
       }
     };
@@ -1261,10 +1354,11 @@ export default function DrawCanvas({
       redrawBackgroundRef.current = () => {};
       redrawForegroundRef.current = () => {};
       redrawHeaderRef.current = () => {};
+      releaseRenderBuffers();
       sims.forEach((simulation) => simulation.stop());
       inspectionRegionsRef.current = [];
       onReadyChange?.(false);
-      onBuildStateChange?.(false);
+      if (!settled) onBuildStateChange?.(false);
     };
   }, [
     BG_WIDTH, BG_HEIGHT,
@@ -1274,7 +1368,7 @@ export default function DrawCanvas({
     previewResolution, previewWidth, previewHeight, previewBgWidth, previewBgHeight,
     passageText,
     paragraphs, paragraphWordCounts, regionRevisions, compositionRevision, sizes, structure,
-    dynamics, onBuildStateChange, onReadyChange,
+    dynamics, onBuildStateChange, onReadyChange, onRenderError,
   ]);
 
   return (

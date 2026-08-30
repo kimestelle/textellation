@@ -692,6 +692,7 @@ export default function InfiniteLiveCanvas({
 
   useEffect(() => {
     let cancelled = false;
+    let reportedIdle = false;
     const simulations: Array<Simulation<WordNode, undefined>> = [];
     const workingCache = new Map(geometryCacheRef.current);
     const constrainedBuild = window.matchMedia(
@@ -905,11 +906,13 @@ export default function InfiniteLiveCanvas({
           regions,
         });
         setIsBuilding(false);
+        reportedIdle = true;
         onBuildStateChange?.(false);
       } catch (caught) {
         if (cancelled) return;
         setError(caught instanceof Error ? caught.message : 'The live field could not render.');
         setIsBuilding(false);
+        reportedIdle = true;
         onBuildStateChange?.(false);
       }
     };
@@ -920,7 +923,7 @@ export default function InfiniteLiveCanvas({
       simulations.forEach((simulation) => simulation.stop());
       inspectionRegionsRef.current = [];
       onReadyChange?.(false);
-      onBuildStateChange?.(false);
+      if (!reportedIdle) onBuildStateChange?.(false);
     };
   }, [
     canvasOption,
