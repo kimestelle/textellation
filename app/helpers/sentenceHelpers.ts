@@ -2,12 +2,18 @@
 import { forceSimulation, forceManyBody, forceLink, forceCollide, SimulationLinkDatum, Simulation } from 'd3-force';
 import type { POSBucket } from './posHelpers';
 import { punctToASCIIStar } from './drawHelpers';
+import {
+  COMPOSITION_PRESETS,
+  type CompositionDynamics,
+} from '../settings/compositionPresets';
 
 export type EllipsePlacement = { x: number; y: number; rx: number; ry: number };
 
 export type WordNode = {
   x?: number; y?: number; vx?: number; vy?: number;
   wPx: number;
+  collisionRx: number;
+  collisionRy: number;
   text: string;
   raw: string;
   punctOnly: boolean;
@@ -79,6 +85,83 @@ export function clampEllipse(
   return { x: cx + u * s * rxIn, y: cy + v * s * ryIn };
 }
 
+export function clampGlyphToEllipse(
+  node: WordNode,
+  ellipse: EllipsePlacement,
+) {
+  const x = node.x ?? ellipse.x;
+  const y = node.y ?? ellipse.y;
+  const u = (x - ellipse.x) / Math.max(1, ellipse.rx);
+  const v = (y - ellipse.y) / Math.max(1, ellipse.ry);
+  const radialDistance = Math.hypot(u, v);
+  if (radialDistance < 0.0001) return { x, y };
+  const angle = Math.atan2(v, u);
+  const a = node.collisionRx / Math.max(1, ellipse.rx);
+  const b = node.collisionRy / Math.max(1, ellipse.ry);
+  const projection = a * Math.abs(Math.cos(angle)) + b * Math.abs(Math.sin(angle));
+  const discriminant = projection * projection + 1 - a * a - b * b;
+  const radialLimit = Math.max(0, -projection + Math.sqrt(Math.max(0, discriminant)));
+  if (radialDistance <= radialLimit) return { x, y };
+  const scale = radialLimit / radialDistance;
+  return {
+    x: ellipse.x + u * scale * ellipse.rx,
+    y: ellipse.y + v * scale * ellipse.ry,
+  };
+}
+
+export function countGlyphOverlaps(nodes: WordNode[], padding = 2) {
+  let overlaps = 0;
+  for (let first = 0; first < nodes.length; first += 1) {
+    for (let second = first + 1; second < nodes.length; second += 1) {
+      const a = nodes[first];
+      const b = nodes[second];
+      const overlapX = a.collisionRx + b.collisionRx + padding
+        - Math.abs((b.x ?? 0) - (a.x ?? 0));
+      const overlapY = a.collisionRy + b.collisionRy + padding
+        - Math.abs((b.y ?? 0) - (a.y ?? 0));
+      if (overlapX > 0 && overlapY > 0) overlaps += 1;
+    }
+  }
+  return overlaps;
+}
+
+export function resolveGlyphOverlaps(
+  nodes: WordNode[],
+  passes = 64,
+) {
+  for (let pass = 0; pass < passes; pass += 1) {
+    let overlapCount = 0;
+    for (let first = 0; first < nodes.length; first += 1) {
+      for (let second = first + 1; second < nodes.length; second += 1) {
+        const a = nodes[first];
+        const b = nodes[second];
+        const ax = a.x ?? 0;
+        const ay = a.y ?? 0;
+        const bx = b.x ?? 0;
+        const by = b.y ?? 0;
+        const dx = bx - ax;
+        const dy = by - ay;
+        const overlapX = a.collisionRx + b.collisionRx + 2 - Math.abs(dx);
+        const overlapY = a.collisionRy + b.collisionRy + 2 - Math.abs(dy);
+        if (overlapX <= 0 || overlapY <= 0) continue;
+        overlapCount += 1;
+        if (overlapX < overlapY) {
+          const direction = dx === 0 ? ((first + second) % 2 ? 1 : -1) : Math.sign(dx);
+          const push = overlapX * 0.52 * direction;
+          a.x = ax - push;
+          b.x = bx + push;
+        } else {
+          const direction = dy === 0 ? ((first + second) % 2 ? -1 : 1) : Math.sign(dy);
+          const push = overlapY * 0.52 * direction;
+          a.y = ay - push;
+          b.y = by + push;
+        }
+      }
+    }
+    if (overlapCount === 0) break;
+  }
+}
+
 function pxFromFontPx(px: number) {
   return px;
 }
@@ -87,7 +170,8 @@ export function computeSentenceCentersFromTokens(
   ctx: CanvasRenderingContext2D,
   sentenceTokens: string[][],
   par: EllipsePlacement,
-  fontPx: number
+  fontPx: number,
+  radiusScale = 1,
 ): SentenceCenter[] {
   const baseGap = Math.round(pxFromFontPx(fontPx) * 0.45);
   const lineH = Math.round(pxFromFontPx(fontPx) * 1.2);
@@ -104,7 +188,9 @@ export function computeSentenceCentersFromTokens(
   const targetArea = targetFill * Math.PI * par.rx * par.ry;
   const scale = Math.sqrt(targetArea / Math.max(1, totalArea));
 
-  const radii = areas.map(a => Math.sqrt((a * scale * scale) / Math.PI) * 0.8 + 12);
+  const radii = areas.map(
+    a => (Math.sqrt((a * scale * scale) / Math.PI) * 0.8 + 12) * radiusScale,
+  );
 
   // sunflower seeds
   const out: { x: number; y: number }[] = [];
@@ -173,6 +259,7 @@ export function buildParagraphSim(args: {
   wordPx: number;
   tokenizeAndBucket: (s: string) => { tokens: string[]; buckets: POSBucket[] };
   random?: () => number;
+  dynamics?: CompositionDynamics;
 }): { nodes: WordNode[]; links: WordLink[]; sim: Simulation<WordNode, undefined> } {
   const {
     ctx,
@@ -182,16 +269,20 @@ export function buildParagraphSim(args: {
     wordPx,
     tokenizeAndBucket,
     random = Math.random,
+    dynamics = COMPOSITION_PRESETS.baseline.dynamics,
   } = args;
 
   const BASE_WORD = 24;
+  const fieldMode = dynamics.fieldGravity > 0;
   const kWord = Math.max(0.5, Math.min(2.0, wordPx / BASE_WORD));
-  const PAD = Math.max(2, Math.round(0.22 * wordPx));
+  const PAD = Math.max(1, Math.round(0.22 * wordPx * dynamics.collisionPadding));
   const JITTER = Math.max(1, Math.round(4 * kWord));
 
-  const SENT_STRENGTH = 0.20 * (1 / (kWord ** 0.3));
-  const CHARGE_STRENGTH = -18 * (1 / (kWord ** 0.3));
-  const CLAMP_PUSH = 0.4 * (1 / kWord);
+  const SENT_STRENGTH = 0.20 * dynamics.sentenceAttraction * (1 / (kWord ** 0.3));
+  const CHARGE_STRENGTH = fieldMode
+    ? -22 * dynamics.repulsion * (kWord ** 2)
+    : -18 * dynamics.repulsion * (1 / (kWord ** 0.3));
+  const CLAMP_PUSH = 0.4 * dynamics.containment * (1 / kWord);
 
   ctx.font = `${wordPx}px Newsreader`;
   const baseGap = Math.round(pxFromFontPx(wordPx) * 0.45) + Math.round(PAD * 0.6);
@@ -201,7 +292,13 @@ export function buildParagraphSim(args: {
   const tagged = sentences.map(tokenizeAndBucket);
   const sentenceTokens = tagged.map(t => t.tokens);
 
-  const sentCenters = computeSentenceCentersFromTokens(ctx, sentenceTokens, parEllipse, wordPx)
+  const sentCenters = computeSentenceCentersFromTokens(
+    ctx,
+    sentenceTokens,
+    parEllipse,
+    wordPx,
+    dynamics.sentenceRadius,
+  )
     .map((c, sIdx) => ({ ...c, p, s: sIdx }));
 
   const nodes: WordNode[] = [];
@@ -239,11 +336,15 @@ export function buildParagraphSim(args: {
       // diagonal radius overestimates every word and makes dense fixed
       // compositions needlessly expensive to settle.
       const r = Math.max(width * 0.5, height * 0.5) + PAD;
-
-      const x = c.x - c.r + (c.r * 2) * ((w + 1) / (tokens.length + 1)) + (random() * 2 - 1) * JITTER;
-      const y = c.y + (random() * 2 - 1) * JITTER;
+      const collisionRx = width * 0.5 + PAD;
+      const collisionRy = height * 0.5 + PAD;
 
       const nodeIndex = nodes.length;
+      const sentenceX = c.x - c.r + (c.r * 2) * ((w + 1) / (tokens.length + 1));
+      const sentenceY = c.y;
+      const jitter = fieldMode ? JITTER * 3 : JITTER;
+      const x = sentenceX + (random() * 2 - 1) * jitter;
+      const y = sentenceY + (random() * 2 - 1) * jitter;
 
       nodes.push({
         x, y, vx: 0, vy: 0,
@@ -256,6 +357,8 @@ export function buildParagraphSim(args: {
         bucket,
         isFirstInSentence,
         wPx,
+        collisionRx,
+        collisionRy,
       });
 
       if (w == 0 || bucket === 'NOUN' || bucket === 'VERB' || bucket === 'PRON') idxOfNounsAndVerbs.push(nodeIndex);
@@ -266,15 +369,30 @@ export function buildParagraphSim(args: {
 
         if (kind === 'punct') {
           //punctuation link
-          links.push({ source: prevIdx, target: nodeIndex, strength: 0.05, kind });
+          links.push({
+            source: prevIdx,
+            target: nodeIndex,
+            strength: 0.05 * dynamics.orderCohesion,
+            kind,
+          });
         } else {
           //normal order
-          links.push({ source: prevIdx, target: nodeIndex, strength: 0.005, kind: 'order' });
+          links.push({
+            source: prevIdx,
+            target: nodeIndex,
+            strength: 0.005 * dynamics.orderCohesion,
+            kind: 'order',
+          });
         }
 
         if (!prev.punctOnly && !punctOnly) {
           if ((prev.bucket === 'NOUN' && bucket === 'NOUN') || (prev.bucket === 'VERB' && bucket === 'VERB')) {
-            links.push({ source: prevIdx, target: nodeIndex, strength: 0.10, kind: 'samePOS' });
+            links.push({
+              source: prevIdx,
+              target: nodeIndex,
+              strength: 0.10 * dynamics.posCohesion,
+              kind: 'samePOS',
+            });
           }
         }
       }
@@ -283,14 +401,24 @@ export function buildParagraphSim(args: {
     }
 
     for (let i = 0; i < idxOfNounsAndVerbs.length - 1; i++) {
-      links.push({ source: idxOfNounsAndVerbs[i], target: idxOfNounsAndVerbs[i + 1], strength: 0.2, kind: 'samePOSWeak' });
+      links.push({
+        source: idxOfNounsAndVerbs[i],
+        target: idxOfNounsAndVerbs[i + 1],
+        strength: 0.2 * dynamics.posCohesion,
+        kind: 'samePOSWeak',
+      });
     }
   }
 
   ctx.font = `${wordPx}px Newsreader`;
 
   const linkForce = forceLink<WordNode, WordLink>(links)
-    .strength(d => d.strength ?? 0.08)
+    .strength((link) => {
+      if (!fieldMode) return link.strength ?? 0.08;
+      if (link.kind === 'punct') return 0.2;
+      if (link.kind === 'order') return 0.09;
+      return 0;
+    })
     .distance(d => {
       const s = (typeof d.source === 'number') ? nodes[d.source] : d.source;
       const t = (typeof d.target === 'number') ? nodes[d.target] : d.target;
@@ -306,44 +434,84 @@ export function buildParagraphSim(args: {
       const extra = Math.min(base * 0.9, avgW * 0.35);
       const adjustedBase = base + extra;
 
+      if (fieldMode) {
+        const glyphSpan = (s?.collisionRx ?? rs) + (t?.collisionRx ?? rt);
+        if (d.kind === 'punct') return glyphSpan + wordPx * 0.35;
+        if (d.kind === 'order') return glyphSpan + wordPx * 4;
+        return glyphSpan + wordPx;
+      }
+
       if (d.kind === 'samePOS') return adjustedBase * 0.50;
       if (d.kind === 'samePOSWeak') return adjustedBase * 0.85;
       if (d.kind === 'punct') return adjustedBase * 0.95;
       if (d.kind === 'order') return adjustedBase * 0.05;
       return adjustedBase * 0.65;
     })
-    .id((_, i) => i);
+    .id((_, i) => i)
+    .iterations(fieldMode ? 2 : 1);
 
   const sentForce = sentenceCenterForce(sentCenters, SENT_STRENGTH);
+  const chargeForce = forceManyBody<WordNode>()
+    .strength((node) => CHARGE_STRENGTH * (fieldMode && node.punctOnly ? 0.25 : 1));
+  if (fieldMode) {
+    chargeForce
+      .distanceMin(Math.max(8, wordPx * 1.25))
+      .distanceMax(Math.max(parEllipse.rx, parEllipse.ry) * 1.5);
+  }
 
   const sim = forceSimulation<WordNode>(nodes)
-    .force('charge', forceManyBody<WordNode>().strength(CHARGE_STRENGTH))
+    .randomSource(random)
+    .force('charge', chargeForce)
     .force('collide', forceCollide<WordNode>().radius(d => d.r).iterations(2))
     .force('link', linkForce)
-    .force('sent', sentForce)
-    .alpha(0.9)
-    .alphaDecay(0.03)
+    .alpha(fieldMode ? 1 : 0.9)
+    .alphaDecay(fieldMode ? 0.045 : 0.03)
+    .velocityDecay(fieldMode ? 0.42 : 0.4)
     .stop();
+  if (!fieldMode) sim.force('sent', sentForce);
 
-  // Keep containment as a force so manual, bounded tick sequences can share
-  // the same geometry without starting D3's independent timer.
-  sim.force('contain', (alpha: number) => {
-    for (const n of nodes) {
-      const nx = n.x ?? parEllipse.x;
-      const ny = n.y ?? parEllipse.y;
-      const cl = clampEllipse(
-        nx,
-        ny,
-        parEllipse.x,
-        parEllipse.y,
-        parEllipse.rx,
-        parEllipse.ry,
-        n.r,
-      );
-      n.vx = (n.vx ?? 0) + (cl.x - nx) * CLAMP_PUSH * alpha;
-      n.vy = (n.vy ?? 0) + (cl.y - ny) * CLAMP_PUSH * alpha;
-    }
-  });
+  // Field has no paragraph boundary: its sentence chains are allowed to drift
+  // beyond their packed seed region. Other presets retain ellipse containment.
+  if (!fieldMode) {
+    sim.force('contain', (alpha: number) => {
+      for (const n of nodes) {
+        const nx = n.x ?? parEllipse.x;
+        const ny = n.y ?? parEllipse.y;
+        const cl = clampEllipse(
+          nx,
+          ny,
+          parEllipse.x,
+          parEllipse.y,
+          parEllipse.rx,
+          parEllipse.ry,
+          n.r,
+        );
+        n.vx = (n.vx ?? 0) + (cl.x - nx) * CLAMP_PUSH * alpha;
+        n.vy = (n.vy ?? 0) + (cl.y - ny) * CLAMP_PUSH * alpha;
+      }
+    });
+  }
+
+  if (dynamics.edgeAttraction > 0) {
+    sim.force('edge', (alpha: number) => {
+      const strength = 0.9 * dynamics.edgeAttraction * alpha;
+      for (const node of nodes) {
+        const nx = node.x ?? parEllipse.x;
+        const ny = node.y ?? parEllipse.y;
+        const dx = nx - parEllipse.x;
+        const dy = ny - parEllipse.y;
+        const distance = Math.hypot(dx, dy) || 1;
+        const normalized = Math.hypot(
+          dx / Math.max(1, parEllipse.rx - node.r),
+          dy / Math.max(1, parEllipse.ry - node.r),
+        );
+        if (normalized >= 0.76) continue;
+        const push = (0.76 - normalized) * strength;
+        node.vx = (node.vx ?? 0) + (dx / distance) * push;
+        node.vy = (node.vy ?? 0) + (dy / distance) * push;
+      }
+    });
+  }
 
   return { nodes, links, sim };
 }

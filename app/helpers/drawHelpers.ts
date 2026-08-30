@@ -64,96 +64,122 @@ export function drawRadialGraph(
   rx: number,
   ry: number,
   index: number,
-  opts?: { spokes?: number; baseAlpha?: number; lineWidth?: number }
+  opts?: {
+    spokes?: number;
+    baseAlpha?: number;
+    lineWidth?: number;
+    visibleBounds?: { x: number; y: number; width: number; height: number };
+    showSpokes?: boolean;
+    showEllipse?: boolean;
+    showLabel?: boolean;
+  }
 ) {
   const spokes = opts?.spokes ?? 16;
   const baseA  = opts?.baseAlpha ?? 0.75;
   const lw     = opts?.lineWidth ?? 1.5;
+  const showSpokes = opts?.showSpokes ?? true;
+  const showEllipse = opts?.showEllipse ?? true;
+  const showLabel = opts?.showLabel ?? true;
 
-  // 1. make an offscreen buffer just big enough for the ellipse bounds
-  const w = Math.ceil(rx * 2);
-  const h = Math.ceil(ry * 2);
-  const off = document.createElement('canvas');
-  off.width = w;
-  off.height = h;
-  const octx = off.getContext('2d');
-  if (!octx) return;
+  if (showSpokes) {
+    // 1. make an offscreen buffer just big enough for the ellipse bounds
+    const w = Math.ceil(rx * 2);
+    const h = Math.ceil(ry * 2);
+    const off = document.createElement('canvas');
+    off.width = w;
+    off.height = h;
+    const octx = off.getContext('2d');
+    if (!octx) return;
 
-  // 3. draw spokes centered at (w/2, h/2) on the offscreen
-  octx.save();
-  octx.beginPath();
-  octx.ellipse(w / 2, h / 2, rx, ry, 0, 0, Math.PI * 2);
-  octx.clip();
-
-  octx.strokeStyle = 'white';
-  octx.setLineDash?.([1, 1]);
-  octx.lineWidth = lw;
-  octx.globalAlpha = baseA;
-
-  const r = Math.max(rx, ry);
-  for (let i = 0; i < spokes; i++) {
-    const a = (i / spokes) * Math.PI * 2;
-    const x2 = w / 2 + r * Math.cos(a);
-    const y2 = h / 2 + r * Math.sin(a);
+    // 3. draw spokes centered at (w/2, h/2) on the offscreen
+    octx.save();
     octx.beginPath();
-    octx.moveTo(w / 2, h / 2);
-    octx.lineTo(x2, y2);
-    octx.stroke();
+    octx.ellipse(w / 2, h / 2, rx, ry, 0, 0, Math.PI * 2);
+    octx.clip();
+
+    octx.strokeStyle = 'white';
+    octx.setLineDash?.([1, 1]);
+    octx.lineWidth = lw;
+    octx.globalAlpha = baseA;
+
+    const r = Math.max(rx, ry);
+    for (let i = 0; i < spokes; i++) {
+      const a = (i / spokes) * Math.PI * 2;
+      const x2 = w / 2 + r * Math.cos(a);
+      const y2 = h / 2 + r * Math.sin(a);
+      octx.beginPath();
+      octx.moveTo(w / 2, h / 2);
+      octx.lineTo(x2, y2);
+      octx.stroke();
+    }
+
+    // 4. apply elliptical radial alpha mask on the offscreen ONLY
+    octx.globalAlpha = 1;
+    octx.globalCompositeOperation = 'destination-in';
+
+    // build an elliptical gradient by scaling a circular one
+    octx.save();
+    octx.translate(w / 2, h / 2);
+    octx.scale(1, ry / rx); // circle of radius rx → ellipse rx×ry
+    const grad = octx.createRadialGradient(0, 0, 0, 0, 0, rx);
+    grad.addColorStop(0.0, 'rgba(255,255,255,0.50)'); // 50% at center
+    grad.addColorStop(1.0, 'rgba(255,255,255,0.00)'); // 0% at edge
+    octx.fillStyle = grad;
+    octx.beginPath();
+    octx.arc(0, 0, rx, 0, Math.PI * 2);
+    octx.fill();
+    octx.restore();
+
+    octx.restore();
+    octx.globalCompositeOperation = 'source-over';
+
+    ctx.drawImage(off, Math.round(cx - rx), Math.round(cy - ry));
   }
 
-  // 4. apply elliptical radial alpha mask on the offscreen ONLY
-  octx.globalAlpha = 1;
-  octx.globalCompositeOperation = 'destination-in';
+  if (showEllipse) {
+    ctx.save();
+    const fillRx = rx * 1.7;
+    const fillRy = ry * 1.7;
+    const fillGrad = ctx.createRadialGradient(cx, cy, 0, cx, cy, fillRx);
+    fillGrad.addColorStop(0.0, REDGREEN_HEX);
+    fillGrad.addColorStop(0.9, 'rgba(39,39,87,0.0)');
+    ctx.fillStyle = fillGrad;
+    ctx.beginPath();
+    ctx.ellipse(cx, cy, fillRx, fillRy, 0, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.restore();
 
-  // build an elliptical gradient by scaling a circular one
-  octx.save();
-  octx.translate(w / 2, h / 2);
-  octx.scale(1, ry / rx); // circle of radius rx → ellipse rx×ry
-  const grad = octx.createRadialGradient(0, 0, 0, 0, 0, rx);
-  grad.addColorStop(0.0, 'rgba(255,255,255,0.50)'); // 50% at center
-  grad.addColorStop(1.0, 'rgba(255,255,255,0.00)'); // 0% at edge
-  octx.fillStyle = grad;
-  octx.beginPath();
-  octx.arc(0, 0, rx, 0, Math.PI * 2);
-  octx.fill();
-  octx.restore();
+  }
 
-  octx.restore();
-  octx.globalCompositeOperation = 'source-over';
-
-  ctx.drawImage(off, Math.round(cx - rx), Math.round(cy - ry));
-
-  ctx.save();
-  const fillRx = rx * 1.7;
-  const fillRy = ry * 1.7;
-  const fillGrad = ctx.createRadialGradient(cx, cy, 0, cx, cy, fillRx);
-  fillGrad.addColorStop(0.0, REDGREEN_HEX);
-  fillGrad.addColorStop(0.9, 'rgba(39,39,87,0.0)');
-  ctx.fillStyle = fillGrad;
-  ctx.beginPath();
-  ctx.ellipse(cx, cy, fillRx, fillRy, 0, 0, Math.PI * 2);
-  ctx.fill();
-  
-
-  ctx.restore();
-
-  // 6. draw roman numerals inside rectangle outside ellipse in a random corner
-  const f = 0.92;
-  const corners = [
-    { x: cx - rx ** f, y: cy - ry ** f, align: 'left' as const,  baseline: 'top' as const },
-    { x: cx + rx ** f, y: cy - ry ** f, align: 'right' as const, baseline: 'top' as const },
-    { x: cx - rx ** f, y: cy + ry ** f, align: 'left' as const,  baseline: 'bottom' as const },
-    { x: cx + rx ** f, y: cy + ry ** f, align: 'right' as const, baseline: 'bottom' as const },
-  ];
-  const corner = corners[index % 4];
+  // Put the region numeral on one of the ellipse's cardinal boundaries. In
+  // the live field, clamp it just inside the visible world bounds so a region
+  // remains identified even when that boundary falls beyond the viewport.
+  if (!showLabel) return;
+  const labelAngles = [-Math.PI / 2, 0, Math.PI / 2, Math.PI];
+  const labelAngle = labelAngles[index % labelAngles.length];
+  let labelX = cx + rx * Math.cos(labelAngle);
+  let labelY = cy + ry * Math.sin(labelAngle);
+  const labelSize = 100;
+  const labelInset = labelSize * 0.58;
+  if (opts?.visibleBounds) {
+    const bounds = opts.visibleBounds;
+    labelX = Math.max(
+      bounds.x + labelInset,
+      Math.min(bounds.x + bounds.width - labelInset, labelX),
+    );
+    labelY = Math.max(
+      bounds.y + labelInset,
+      Math.min(bounds.y + bounds.height - labelInset, labelY),
+    );
+  }
   const roman = romanNumerals[index % romanNumerals.length];
 
   ctx.save();
-  ctx.font = `100px newsreader, serif`;
-  ctx.fillStyle = '#ffffff30';
-  ctx.textAlign = corner.align;
-  ctx.textBaseline = corner.baseline;
-  ctx.fillText(roman, corner.x, corner.y);
+  ctx.font = `${labelSize}px newsreader, serif`;
+  ctx.fillStyle = 'rgba(255,255,255,0.58)';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(roman, labelX, labelY);
   ctx.restore();
 }
 
@@ -282,23 +308,39 @@ export function drawWrappedColumns(
   }
 
   //draw footer in bottom of fourth
-  //title in bold italic
   const footerY = y + height - lineH * 3.65;
   cursorX = x + (columns - 1) * (colW + columnGap);
+  const imgSize = 120;
+  const compassX = cursorX + colW - imgSize;
+  const compassY = footerY - 30;
+  const compassRadius = imgSize / 2;
+  const compassCenterX = compassX + compassRadius;
+  const compassCenterY = compassY + compassRadius;
+  const circleLeftAt = (textTop: number) => {
+    const textCenterY = textTop + fontPx / 2;
+    const dy = Math.max(
+      -compassRadius,
+      Math.min(compassRadius, textCenterY - compassCenterY),
+    );
+    return compassCenterX - Math.sqrt(compassRadius ** 2 - dy ** 2);
+  };
+  const thirdLineY = footerY + lineH * 2;
+  const thirdLineRight = compassX - 10;
+  const curveGap = circleLeftAt(thirdLineY) - thirdLineRight;
+  const textRightAt = (textTop: number) => circleLeftAt(textTop) - curveGap;
+  ctx.textAlign = 'right';
+
+  // Preserve the third line's gap, then follow the compass curve upward.
   ctx.font = `bold italic ${fontPx}px newsreader, serif`;
-  ctx.fillText("textellation.com", cursorX + 150, footerY);
-  //made by in regular letters
+  ctx.fillText('textellation.com', textRightAt(footerY), footerY);
   ctx.font = `${fontPx}px newsreader, serif`;
-  ctx.fillText("crafted wth love", cursorX + 165, footerY + lineH);
-  //current date in regular letters, place with end of string in 100 + curzorX
+  ctx.fillText('crafted with love', textRightAt(footerY + lineH), footerY + lineH);
   const date = new Date();
   const dateStr = date.toLocaleDateString(undefined, { year: 'numeric', month: 'long', day: 'numeric' });
-  const dateWidth = ctx.measureText(dateStr).width;
-  ctx.fillText(dateStr, cursorX + colW - dateWidth - 130, footerY + lineH * 2);
-  //compass image next to text
+  ctx.fillText(dateStr, thirdLineRight, thirdLineY);
+
   if (compassImage) {
-    const imgSize = 120;
-    ctx.drawImage(compassImage, cursorX + colW - imgSize, footerY - 30, imgSize, imgSize);
+    ctx.drawImage(compassImage, compassX, compassY, imgSize, imgSize);
   }
   ctx.restore();
 }
@@ -333,6 +375,7 @@ export function drawHeader(
     color?: string;
     textAlign?: CanvasTextAlign;
     textBaseline?: CanvasTextBaseline;
+    logicalCanvasWidth?: number;
   }
 ): void {
   const {
@@ -340,6 +383,7 @@ export function drawHeader(
     color = '#000',
     textAlign = 'start',
     textBaseline = 'top',
+    logicalCanvasWidth = ctx.canvas.width,
   } = opts || {};
 
   ctx.save();
@@ -352,7 +396,7 @@ export function drawHeader(
   //draw line in remaining width with intermittend ascii stars
   const textWidth = ctx.measureText(text).width;
   const lineStartX = x + textWidth + 20;
-  const remainingWidth = ctx.canvas.width - lineStartX - x;
+  const remainingWidth = logicalCanvasWidth - lineStartX - x;
 
   ctx.beginPath();
   ctx.lineTo(lineStartX, y + ctx.measureText(text).actualBoundingBoxDescent);

@@ -12,6 +12,16 @@ import {
   splitPassageParagraphs,
   type CanvasInspection,
 } from '../helpers/inspectionHelpers';
+import {
+  COMPOSITION_PRESET_CHOICES,
+  COMPOSITION_PRESETS,
+  type CompositionPresetId,
+} from '../settings/compositionPresets';
+import {
+  DEFAULT_RENDER_VISIBILITY,
+  RENDER_VISIBILITY_GROUPS,
+  type RenderVisibility,
+} from '../settings/renderVisibility';
 
 export type SaveContext =
   | { kind: 'automatic' }
@@ -38,6 +48,11 @@ type TextEditModalProps = {
   onClearInspection?: () => void;
   onRecomposeRegion?: (paragraphIndex: number) => void;
   onRecompose?: () => void;
+  compositionPreset?: CompositionPresetId;
+  compositionBusy?: boolean;
+  onCompositionPresetChange?: (preset: CompositionPresetId) => void;
+  renderVisibility?: RenderVisibility;
+  onRenderVisibilityChange?: (visibility: RenderVisibility) => void;
 };
 
 function draftSignature(text: string, header: string, option: CanvasOption) {
@@ -47,6 +62,13 @@ function draftSignature(text: string, header: string, option: CanvasOption) {
 function countLabel(text: string, option: CanvasOption) {
   const count = countWordsAndParagraphs(text, option);
   return `${count.words} word${count.words === 1 ? '' : 's'} in ${count.paragraphs} / ${option.maxParas} region${count.paragraphs === 1 ? '' : 's'}`;
+}
+
+function pixelSizeLabel(option: CanvasOption) {
+  const dimensions = `${option.W} × ${option.H} px`;
+  return option.kind === 'infinite'
+    ? `${dimensions} initial viewport`
+    : dimensions;
 }
 
 export default function TextEditModal({
@@ -61,6 +83,11 @@ export default function TextEditModal({
   onClearInspection,
   onRecomposeRegion,
   onRecompose,
+  compositionPreset = 'baseline',
+  compositionBusy = false,
+  onCompositionPresetChange,
+  renderVisibility = DEFAULT_RENDER_VISIBILITY,
+  onRenderVisibilityChange,
 }: TextEditModalProps) {
   const [text, setText] = useState<string>(littlePrince.text);
   const [header, setHeader] = useState<string>(littlePrince.header);
@@ -69,6 +96,7 @@ export default function TextEditModal({
   const [hoveredOption, setHoveredOption] = useState<CanvasOption | null>(null);
   const [isPreparing, setIsPreparing] = useState(false);
   const [regionEdit, setRegionEdit] = useState<{ id: string; value: string } | null>(null);
+  const [pendingPreset, setPendingPreset] = useState<CompositionPresetId | null>(null);
   const autoVersionRef = useRef(0);
   const lastSubmittedRef = useRef(
     draftSignature(littlePrince.text, littlePrince.header, CANVAS_OPTIONS[0]),
@@ -82,6 +110,19 @@ export default function TextEditModal({
       ? regionEdit.value
       : selectedRegion.sourceParagraph
     : '';
+
+  useEffect(() => {
+    if (!pendingPreset || compositionBusy || !onCompositionPresetChange) return;
+    if (pendingPreset === compositionPreset) {
+      setPendingPreset(null);
+      return;
+    }
+    const timer = window.setTimeout(() => {
+      onCompositionPresetChange(pendingPreset);
+      setPendingPreset(null);
+    }, 320);
+    return () => window.clearTimeout(timer);
+  }, [compositionBusy, compositionPreset, onCompositionPresetChange, pendingPreset]);
 
   function handleExampleClick(example: { text: string; header: string }) {
     setText(example.text);
@@ -248,8 +289,7 @@ export default function TextEditModal({
           <h3 id="rail-composition-heading">2 composition</h3>
           <span className="mb-2 ml-2 flex-grow border-b border-dashed border-neutral-500" />
         </div>
-        <div className="w-full overflow-x-auto pb-1">
-          <div className="flex w-max min-w-full flex-nowrap justify-between gap-2" role="group" aria-label="Canvas format">
+        <div className="flex w-full flex-col gap-1" role="group" aria-label="Canvas format">
           {CANVAS_OPTIONS.map((option) => {
             const active = option.id === canvasSetting.id;
             return (
@@ -257,7 +297,7 @@ export default function TextEditModal({
                 type="button"
                 key={option.id}
                 aria-pressed={active}
-                className="canvas-option no-format group flex w-16 shrink-0 flex-col items-center gap-1 p-0 text-center outline-none focus-visible:ring-1 focus-visible:ring-white/60"
+                className="canvas-option no-format group flex w-full items-center gap-3 py-1 text-left outline-none focus-visible:ring-1 focus-visible:ring-white/60"
                 onClick={() => {
                   setCanvasSetting(option);
                   setNote('');
@@ -267,14 +307,18 @@ export default function TextEditModal({
                 onFocus={() => setHoveredOption(option)}
                 onBlur={() => setHoveredOption(null)}
               >
-                <CanvasOptionPreview option={option} active={active} />
-                <span className={active ? 'leading-tight text-white' : 'leading-tight text-neutral-400'}>
-                  [{option.name}]
+                <CanvasOptionPreview option={option} active={active} size={48} />
+                <span className="flex min-w-0 flex-1 flex-col items-start gap-1">
+                  <span className={active ? 'leading-tight text-white' : 'leading-tight text-neutral-400'}>
+                    [{option.name}]
+                  </span>
+                  <span className={`status-signal text-[10px] leading-none ${active ? 'text-white/70' : 'text-white/35'}`}>
+                    {pixelSizeLabel(option)}
+                  </span>
                 </span>
               </button>
             );
           })}
-          </div>
         </div>
         <div className="status-signal text-[11px] leading-snug" style={{ color: 'rgba(255,255,255,0.62)' }}>
           {shownOption.description}
@@ -333,6 +377,95 @@ export default function TextEditModal({
             disabled={downloadDisabled}
           >
             {`<${downloadLabel}>`}
+          </button>
+        </div>
+      </section>
+
+      <section className="flex w-full flex-col gap-3 pb-8" aria-labelledby="rail-knobs-heading">
+        <div className="flex w-full flex-row items-baseline">
+          <h3 id="rail-knobs-heading">more knobs</h3>
+          <span className="mb-2 ml-2 flex-grow border-b border-dashed border-neutral-500" />
+        </div>
+        <div className="flex w-full flex-col gap-2" role="group" aria-label="Composition preset">
+          {COMPOSITION_PRESET_CHOICES.map((preset) => {
+            const shownPreset = pendingPreset ?? compositionPreset;
+            const active = preset.id === shownPreset;
+            return (
+              <button
+                key={preset.id}
+                type="button"
+                className="no-format flex w-full flex-col items-start text-left"
+                aria-pressed={active}
+                onClick={() => setPendingPreset(preset.id)}
+              >
+                <span className={active ? 'text-white' : 'text-neutral-400'}>
+                  [{preset.label}]
+                </span>
+                <span className="status-signal text-[10px] leading-snug text-white/45">
+                  {preset.description}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+        <div className="flex items-center justify-between gap-3 pt-1">
+          <span className="status-signal text-[10px] leading-snug text-white/45" role="status">
+            {pendingPreset
+              ? compositionBusy
+                ? `${COMPOSITION_PRESETS[pendingPreset].label.toLowerCase()} queued · waits for current composition`
+                : `${COMPOSITION_PRESETS[pendingPreset].label.toLowerCase()} queued · latest choice wins`
+              : compositionBusy
+                ? 'composition settling · controls gated'
+                : COMPOSITION_PRESETS[compositionPreset].description}
+          </span>
+          <button
+            type="button"
+            className="no-format shrink-0 text-neutral-300"
+            onClick={() => setPendingPreset('baseline')}
+          >
+            {'<reset>'}
+          </button>
+        </div>
+        <div className="flex w-full flex-col gap-2 border-t border-dashed border-white/15 pt-3">
+          <span className="status-signal text-[10px] text-white/45">
+            visibility · drawing only
+          </span>
+          {RENDER_VISIBILITY_GROUPS.map((group) => (
+            <div key={group.label} className="flex flex-col gap-1">
+              <span className="status-signal text-[9px] uppercase tracking-[0.08em] text-white/30">
+                {group.label}
+              </span>
+              <div
+                className="flex flex-wrap gap-x-3 gap-y-1"
+                role="group"
+                aria-label={`${group.label} visibility`}
+              >
+                {group.choices.map((choice) => {
+                  const visible = renderVisibility[choice.id];
+                  return (
+                    <button
+                      key={choice.id}
+                      type="button"
+                      className={`no-format text-left ${visible ? 'text-white' : 'text-white/30'}`}
+                      aria-pressed={visible}
+                      onClick={() => onRenderVisibilityChange?.({
+                        ...renderVisibility,
+                        [choice.id]: !visible,
+                      })}
+                    >
+                      [{choice.label}]
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
+          <button
+            type="button"
+            className="no-format self-end text-neutral-300"
+            onClick={() => onRenderVisibilityChange?.({ ...DEFAULT_RENDER_VISIBILITY })}
+          >
+            {'<show all>'}
           </button>
         </div>
       </section>

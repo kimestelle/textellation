@@ -20,7 +20,9 @@ import { tokenizeAndBucket } from './helpers/posHelpers';
 import {
   buildParagraphSim,
   clampEllipse,
+  countGlyphOverlaps,
   makeFonts,
+  resolveGlyphOverlaps,
   type WordLink,
   type WordNode,
 } from './helpers/sentenceHelpers';
@@ -38,6 +40,14 @@ import {
   type InspectableRegion,
 } from './helpers/inspectionHelpers';
 import InspectionCornerDetails from './components/InspectionCornerDetails';
+import {
+  COMPOSITION_PRESETS,
+  type CompositionPresetId,
+} from './settings/compositionPresets';
+import {
+  DEFAULT_RENDER_VISIBILITY,
+  type RenderVisibility,
+} from './settings/renderVisibility';
 
 type ViewTransform = { x: number; y: number; scale: number };
 type ContentBounds = { x: number; y: number; width: number; height: number };
@@ -50,6 +60,7 @@ type RegionGeometry = {
 type LiveRegion = RegionGeometry & {
   key: string;
   ellipse: Ellipse;
+  contentBounds?: ContentBounds;
 };
 
 type LiveModel = {
@@ -63,6 +74,7 @@ type Props = {
   canvasOption: InfiniteCanvasOption;
   canvasRef: React.RefObject<HTMLCanvasElement | null>;
   onReadyChange?: (ready: boolean) => void;
+  onBuildStateChange?: (busy: boolean) => void;
   onInspectionHover?: (inspection: CanvasInspection | null) => void;
   onInspectionSelect?: (inspection: CanvasInspection | null) => void;
   activeInspection?: CanvasInspection | null;
@@ -71,6 +83,8 @@ type Props = {
   onToggleTools?: () => void;
   regionRevisions?: Record<number, number>;
   compositionRevision?: number;
+  compositionPreset?: CompositionPresetId;
+  renderVisibility?: RenderVisibility;
 };
 
 type PointerPosition = { x: number; y: number };
@@ -105,12 +119,49 @@ function paddedBounds(ellipses: Ellipse[]): ContentBounds {
   };
 }
 
-function intersects(ellipse: Ellipse, bounds: ContentBounds) {
+function freeFieldBounds(regions: LiveRegion[]): ContentBounds {
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const region of regions) {
+    minX = Math.min(minX, region.ellipse.x);
+    minY = Math.min(minY, region.ellipse.y);
+    maxX = Math.max(maxX, region.ellipse.x);
+    maxY = Math.max(maxY, region.ellipse.y);
+    for (const node of region.nodes) {
+      const worldX = region.ellipse.x + (node.x ?? 0);
+      const worldY = region.ellipse.y + (node.y ?? 0);
+      minX = Math.min(minX, worldX - node.collisionRx);
+      minY = Math.min(minY, worldY - node.collisionRy);
+      maxX = Math.max(maxX, worldX + node.collisionRx);
+      maxY = Math.max(maxY, worldY + node.collisionRy);
+    }
+  }
+  if (!Number.isFinite(minX)) return { x: 0, y: 0, width: 1, height: 1 };
+  return {
+    x: minX - REGION_PADDING,
+    y: minY - REGION_PADDING,
+    width: maxX - minX + REGION_PADDING * 2,
+    height: maxY - minY + REGION_PADDING * 2,
+  };
+}
+
+function intersects(ellipse: Ellipse, bounds: ContentBounds, halo = REGION_HALO) {
   return !(
-    ellipse.x + ellipse.rx * REGION_HALO < bounds.x ||
-    ellipse.x - ellipse.rx * REGION_HALO > bounds.x + bounds.width ||
-    ellipse.y + ellipse.ry * REGION_HALO < bounds.y ||
-    ellipse.y - ellipse.ry * REGION_HALO > bounds.y + bounds.height
+    ellipse.x + ellipse.rx * halo < bounds.x ||
+    ellipse.x - ellipse.rx * halo > bounds.x + bounds.width ||
+    ellipse.y + ellipse.ry * halo < bounds.y ||
+    ellipse.y - ellipse.ry * halo > bounds.y + bounds.height
+  );
+}
+
+function boundsIntersect(first: ContentBounds, second: ContentBounds) {
+  return !(
+    first.x + first.width < second.x ||
+    first.x > second.x + second.width ||
+    first.y + first.height < second.y ||
+    first.y > second.y + second.height
   );
 }
 
@@ -120,6 +171,7 @@ function drawInfiniteBackground(
   focus: ContentBounds,
   gridSize: number,
   scale: number,
+  showGrid: boolean,
 ) {
   const centerX = focus.x + focus.width / 2;
   const centerY = focus.y + focus.height / 2;
@@ -139,6 +191,8 @@ function drawInfiniteBackground(
   context.fillRect(visible.x, visible.y, visible.width, visible.height);
   context.fillStyle = gradient;
   context.fillRect(visible.x, visible.y, visible.width, visible.height);
+
+  if (!showGrid) return;
 
   let adaptiveGrid = gridSize;
   while (adaptiveGrid * scale < 7) adaptiveGrid *= 2;
@@ -203,19 +257,36 @@ function drawRegion(
   context: CanvasRenderingContext2D,
   region: LiveRegion,
   wordSize: number,
+  visibility: RenderVisibility,
+  fieldMode = false,
 ) {
   const fonts = makeFonts({ family: 'Newsreader', wordPx: wordSize });
   context.save();
   context.translate(region.ellipse.x, region.ellipse.y);
   for (const link of region.links) {
+    if (
+      (link.kind === 'order' && !visibility.orderEdges) ||
+      (link.kind === 'punct' && !visibility.punctuationEdges) ||
+      (link.kind === 'samePOS' && !visibility.strongPosEdges) ||
+      (link.kind === 'samePOSWeak' && !visibility.weakPosEdges)
+    ) {
+      continue;
+    }
     const source = typeof link.source === 'number' ? null : link.source;
     const target = typeof link.target === 'number' ? null : link.target;
     if (!source || !target) continue;
     const dotted = link.kind === 'punct' || source.punctOnly || target.punctOnly;
     const weak = link.kind === 'order';
-    context.strokeStyle = weak ? DEEPBLUEGREEN_HEX : 'rgba(255,255,255,0.52)';
+    const sequence = weak || link.kind === 'punct';
+    context.strokeStyle = fieldMode
+      ? sequence
+        ? DEEPBLUEGREEN_HEX
+        : 'rgba(255,255,255,0.16)'
+      : weak
+        ? DEEPBLUEGREEN_HEX
+        : 'rgba(255,255,255,0.52)';
     context.setLineDash(dotted ? [3, 3] : weak ? [1, 2] : []);
-    context.lineWidth = weak ? 0.6 : 1;
+    context.lineWidth = fieldMode ? (sequence ? 0.85 : 0.6) : weak ? 0.6 : 1;
     context.beginPath();
     context.moveTo(source.x ?? 0, source.y ?? 0);
     context.lineTo(target.x ?? 0, target.y ?? 0);
@@ -299,6 +370,7 @@ export default function InfiniteLiveCanvas({
   canvasOption,
   canvasRef,
   onReadyChange,
+  onBuildStateChange,
   onInspectionHover,
   onInspectionSelect,
   activeInspection,
@@ -307,6 +379,8 @@ export default function InfiniteLiveCanvas({
   onToggleTools,
   regionRevisions = EMPTY_REGION_REVISIONS,
   compositionRevision = 0,
+  compositionPreset = 'baseline',
+  renderVisibility = DEFAULT_RENDER_VISIBILITY,
 }: Props) {
   const wrapperRef = useRef<HTMLDivElement | null>(null);
   const geometryCacheRef = useRef(new Map<string, RegionGeometry>());
@@ -333,6 +407,7 @@ export default function InfiniteLiveCanvas({
   const [isBuilding, setIsBuilding] = useState(true);
   const [error, setError] = useState('');
   const [textureVersion, setTextureVersion] = useState(0);
+  const dynamics = COMPOSITION_PRESETS[compositionPreset].dynamics;
 
   const paragraphs = useMemo(
     () =>
@@ -409,22 +484,29 @@ export default function InfiniteLiveCanvas({
   }, [clampScale, model, scheduleView, viewport]);
 
   const focusFirst = useCallback(() => {
-    const first = model?.regions[0]?.ellipse;
-    if (!first || !viewport.width || !viewport.height) return;
+    const firstRegion = model?.regions[0];
+    const first = firstRegion?.ellipse;
+    if (!firstRegion || !first || !viewport.width || !viewport.height) return;
     const air = Math.min(viewport.width, viewport.height) * 0.14;
+    const halo = compositionPreset === 'field' ? 1 : REGION_HALO;
+    const fieldBounds = compositionPreset === 'field' ? firstRegion.contentBounds : undefined;
+    const width = fieldBounds?.width ?? first.rx * halo * 2;
+    const height = fieldBounds?.height ?? first.ry * halo * 2;
+    const centerX = fieldBounds ? fieldBounds.x + fieldBounds.width / 2 : first.x;
+    const centerY = fieldBounds ? fieldBounds.y + fieldBounds.height / 2 : first.y;
     const fitted = Math.min(
-      (viewport.width - air * 2) / Math.max(1, first.rx * REGION_HALO * 2),
-      (viewport.height - air * 2) / Math.max(1, first.ry * REGION_HALO * 2),
+      (viewport.width - air * 2) / Math.max(1, width),
+      (viewport.height - air * 2) / Math.max(1, height),
       0.8,
     );
     const scale = clampScale(Math.max(0.32, fitted));
     scheduleView({
       scale,
-      x: viewport.width / 2 - first.x * scale,
-      y: viewport.height / 2 - first.y * scale,
+      x: viewport.width / 2 - centerX * scale,
+      y: viewport.height / 2 - centerY * scale,
     });
     hasCenteredRef.current = true;
-  }, [clampScale, model, scheduleView, viewport]);
+  }, [clampScale, compositionPreset, model, scheduleView, viewport]);
 
   const fitView = useCallback(() => {
     if (!activeInspection || activeInspection.canvasKind !== 'infinite') {
@@ -435,8 +517,9 @@ export default function InfiniteLiveCanvas({
     let width: number;
     let height: number;
     if (activeInspection.kind === 'region') {
-      width = activeInspection.anchor.rx * REGION_HALO * 2;
-      height = activeInspection.anchor.ry * REGION_HALO * 2;
+      const halo = compositionPreset === 'field' ? 1 : REGION_HALO;
+      width = activeInspection.anchor.rx * halo * 2;
+      height = activeInspection.anchor.ry * halo * 2;
     } else {
       width = Math.max(260, activeInspection.anchor.width * 6);
       height = Math.max(180, activeInspection.anchor.height * 6);
@@ -453,7 +536,7 @@ export default function InfiniteLiveCanvas({
       y: viewport.height / 2 - anchor.y * scale,
     });
     hasCenteredRef.current = true;
-  }, [activeInspection, clampScale, focusFirst, scheduleView, viewport]);
+  }, [activeInspection, clampScale, compositionPreset, focusFirst, scheduleView, viewport]);
 
   const setActualSize = useCallback(() => {
     if (!viewport.width || !viewport.height) return;
@@ -575,6 +658,7 @@ export default function InfiniteLiveCanvas({
     setIsBuilding(true);
     setError('');
     onReadyChange?.(false);
+    onBuildStateChange?.(true);
 
     const build = async () => {
       try {
@@ -602,11 +686,15 @@ export default function InfiniteLiveCanvas({
             (total, sentence) => total + tokenizeAndBucket(sentence).tokens.length,
             0,
           );
-          return ellipseSizeFromWords(
+          const size = ellipseSizeFromWords(
             nodes,
             canvasOption.W - canvasOption.MARGIN * 2,
             { minS: 220, maxS: 700, mix: 0.1 },
           );
+          return {
+            rx: size.rx * dynamics.regionScale,
+            ry: size.ry * dynamics.regionScale,
+          };
         });
         if (!sizes.length) throw new Error('Add some text to create a live field.');
         const packed = growingTightPack(
@@ -632,6 +720,7 @@ export default function InfiniteLiveCanvas({
             ellipse.ry.toFixed(3),
             compositionRevision,
             regionRevisions[index] ?? 0,
+            compositionPreset,
           ].join('\u001f');
           activeKeys.add(key);
           let geometry = workingCache.get(key);
@@ -644,23 +733,34 @@ export default function InfiniteLiveCanvas({
               parEllipse: localEllipse,
               wordPx: canvasOption.WORD_SIZE,
               tokenizeAndBucket,
-              random: seededRandom(LIVE_SEED ^ hashString(key)),
+              random: seededRandom(LIVE_SEED ^ dynamics.seed ^ hashString(key)),
+              dynamics,
             });
             simulations.push(built.sim);
-            for (let tick = 0; tick < 40; tick += 1) {
-              built.sim.tick();
-              for (const node of built.nodes) {
-                const clamped = clampEllipse(
-                  node.x ?? 0,
-                  node.y ?? 0,
-                  0,
-                  0,
-                  localEllipse.rx,
-                  localEllipse.ry,
-                  node.r,
-                );
-                node.x = clamped.x;
-                node.y = clamped.y;
+            if (compositionPreset === 'field') {
+              for (let tick = 0; tick < 96; tick += 1) {
+                built.sim.tick();
+              }
+              resolveGlyphOverlaps(built.nodes, 96);
+              if (countGlyphOverlaps(built.nodes) > 0) {
+                throw new Error('This passage is too dense to place without overlap.');
+              }
+            } else {
+              for (let tick = 0; tick < 40; tick += 1) {
+                built.sim.tick();
+                for (const node of built.nodes) {
+                  const clamped = clampEllipse(
+                    node.x ?? 0,
+                    node.y ?? 0,
+                    0,
+                    0,
+                    localEllipse.rx,
+                    localEllipse.ry,
+                    node.r,
+                  );
+                  node.x = clamped.x;
+                  node.y = clamped.y;
+                }
               }
             }
             built.sim.stop();
@@ -683,6 +783,39 @@ export default function InfiniteLiveCanvas({
             },
           });
         }
+        if (compositionPreset === 'field') {
+          const worldNodes: WordNode[] = [];
+          for (const region of regions) {
+            for (const node of region.nodes) {
+              node.x = (node.x ?? 0) + region.ellipse.x;
+              node.y = (node.y ?? 0) + region.ellipse.y;
+              worldNodes.push(node);
+            }
+          }
+          resolveGlyphOverlaps(worldNodes, 96);
+          for (const region of regions) {
+            let minX = region.ellipse.x;
+            let minY = region.ellipse.y;
+            let maxX = region.ellipse.x;
+            let maxY = region.ellipse.y;
+            for (const node of region.nodes) {
+              node.x = (node.x ?? region.ellipse.x) - region.ellipse.x;
+              node.y = (node.y ?? region.ellipse.y) - region.ellipse.y;
+              const worldX = region.ellipse.x + node.x;
+              const worldY = region.ellipse.y + node.y;
+              minX = Math.min(minX, worldX - node.collisionRx);
+              minY = Math.min(minY, worldY - node.collisionRy);
+              maxX = Math.max(maxX, worldX + node.collisionRx);
+              maxY = Math.max(maxY, worldY + node.collisionRy);
+            }
+            region.contentBounds = {
+              x: minX,
+              y: minY,
+              width: maxX - minX,
+              height: maxY - minY,
+            };
+          }
+        }
         if (cancelled) return;
         inspectionRegionsRef.current = regions.map((region, index) => ({
           paragraphIndex: index,
@@ -697,12 +830,19 @@ export default function InfiniteLiveCanvas({
         geometryCacheRef.current = new Map(
           [...workingCache].filter(([key]) => activeKeys.has(key)),
         );
-        setModel({ bounds: paddedBounds(regions.map((region) => region.ellipse)), regions });
+        setModel({
+          bounds: compositionPreset === 'field'
+            ? freeFieldBounds(regions)
+            : paddedBounds(regions.map((region) => region.ellipse)),
+          regions,
+        });
         setIsBuilding(false);
+        onBuildStateChange?.(false);
       } catch (caught) {
         if (cancelled) return;
         setError(caught instanceof Error ? caught.message : 'The live field could not render.');
         setIsBuilding(false);
+        onBuildStateChange?.(false);
       }
     };
 
@@ -712,8 +852,18 @@ export default function InfiniteLiveCanvas({
       simulations.forEach((simulation) => simulation.stop());
       inspectionRegionsRef.current = [];
       onReadyChange?.(false);
+      onBuildStateChange?.(false);
     };
-  }, [canvasOption, compositionRevision, onReadyChange, paragraphs, regionRevisions]);
+  }, [
+    canvasOption,
+    compositionPreset,
+    compositionRevision,
+    dynamics,
+    onBuildStateChange,
+    onReadyChange,
+    paragraphs,
+    regionRevisions,
+  ]);
 
   useEffect(() => {
     if (model && !hasCenteredRef.current) focusFirst();
@@ -786,36 +936,68 @@ export default function InfiniteLiveCanvas({
       focus,
       canvasOption.GRID_SIZE,
       view.scale,
+      renderVisibility.grid,
     );
 
     if (model) {
-      context.save();
-      context.strokeStyle = 'white';
-      context.lineWidth = 1;
-      context.setLineDash([1, 1]);
-      for (let index = 0; index < model.regions.length - 1; index += 1) {
-        const first = model.regions[index].ellipse;
-        const second = model.regions[index + 1].ellipse;
-        context.beginPath();
-        context.moveTo(first.x, first.y);
-        context.lineTo(second.x, second.y);
-        context.stroke();
+      if (renderVisibility.ellipseConnectors) {
+        context.save();
+        context.strokeStyle = 'white';
+        context.lineWidth = 1;
+        context.setLineDash([1, 1]);
+        for (let index = 0; index < model.regions.length - 1; index += 1) {
+          const first = model.regions[index].ellipse;
+          const second = model.regions[index + 1].ellipse;
+          context.beginPath();
+          context.moveTo(first.x, first.y);
+          context.lineTo(second.x, second.y);
+          context.stroke();
+        }
+        context.restore();
       }
-      context.restore();
-      const visibleRegions = model.regions.filter((region) => intersects(region.ellipse, visible));
-      visibleRegions.forEach((region) => {
-        drawRadialGraph(
+      const visibleRegions = model.regions.filter((region) =>
+        compositionPreset === 'field' && region.contentBounds
+          ? boundsIntersect(region.contentBounds, visible)
+          : intersects(region.ellipse, visible),
+      );
+      if (
+        renderVisibility.ellipses ||
+        renderVisibility.ellipseSpokes ||
+        renderVisibility.ellipseLabels
+      ) {
+        visibleRegions.forEach((region) => {
+          drawRadialGraph(
+            context,
+            region.ellipse.x,
+            region.ellipse.y,
+            region.ellipse.rx,
+            region.ellipse.ry,
+            model.regions.indexOf(region),
+            {
+              visibleBounds: visible,
+              showEllipse: renderVisibility.ellipses,
+              showSpokes: renderVisibility.ellipseSpokes,
+              showLabel: renderVisibility.ellipseLabels,
+            },
+          );
+        });
+      }
+      if (renderVisibility.particles) {
+        drawVisibleParticles(
           context,
-          region.ellipse.x,
-          region.ellipse.y,
-          region.ellipse.rx,
-          region.ellipse.ry,
-          model.regions.indexOf(region),
+          visible,
+          visibleRegions,
+          view.scale,
         );
-      });
-      drawVisibleParticles(context, visible, visibleRegions, view.scale);
+      }
       visibleRegions.forEach((region) => {
-        drawRegion(context, region, canvasOption.WORD_SIZE);
+        drawRegion(
+          context,
+          region,
+          canvasOption.WORD_SIZE,
+          renderVisibility,
+          compositionPreset === 'field',
+        );
       });
 
       context.save();
@@ -827,8 +1009,8 @@ export default function InfiniteLiveCanvas({
       const first = model.regions[0].ellipse;
       context.fillText(
         passageHeader,
-        first.x - first.rx * REGION_HALO,
-        first.y - first.ry * REGION_HALO,
+        compositionPreset === 'field' ? model.bounds.x + REGION_PADDING / 2 : first.x - first.rx * REGION_HALO,
+        compositionPreset === 'field' ? model.bounds.y + REGION_PADDING / 2 : first.y - first.ry * REGION_HALO,
       );
       context.restore();
     }
@@ -849,11 +1031,13 @@ export default function InfiniteLiveCanvas({
   }, [
     canvasOption,
     canvasRef,
+    compositionPreset,
     model,
     error,
     isBuilding,
     onReadyChange,
     passageHeader,
+    renderVisibility,
     textureVersion,
     view,
     viewport,

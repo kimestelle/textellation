@@ -3,16 +3,18 @@ import { CanvasOption } from "../settings/canvasOptions";
 export default function CanvasOptionPreview({
   option,
   active,
+  size = 64,
 }: {
   option: CanvasOption;
   active: boolean;
+  size?: number;
 }) {
   if (option.kind === "infinite") {
     const line = active ? "rgba(255,255,255,0.34)" : "rgba(255,255,255,0.22)";
     return (
       <div
         className="relative flex shrink-0 items-center justify-center"
-        style={{ width: 64, height: 64 }}
+        style={{ width: size, height: size }}
         aria-hidden="true"
       >
         <div
@@ -25,11 +27,11 @@ export default function CanvasOptionPreview({
             maskImage: "radial-gradient(circle, black 46%, transparent 78%)",
           }}
         >
-          {[16, 32, 48].map((offset) => (
-            <div key={`x-${offset}`} className="absolute inset-y-0 w-px" style={{ left: offset, background: line }} />
+          {[25, 50, 75].map((offset) => (
+            <div key={`x-${offset}`} className="absolute inset-y-0 w-px" style={{ left: `${offset}%`, background: line }} />
           ))}
-          {[16, 32, 48].map((offset) => (
-            <div key={`y-${offset}`} className="absolute inset-x-0 h-px" style={{ top: offset, background: line }} />
+          {[25, 50, 75].map((offset) => (
+            <div key={`y-${offset}`} className="absolute inset-x-0 h-px" style={{ top: `${offset}%`, background: line }} />
           ))}
           <div
             className="absolute left-1/2 top-1/2 h-5 w-8 -translate-x-1/2 -translate-y-1/2 rounded-[50%] border border-white/45"
@@ -55,7 +57,7 @@ export default function CanvasOptionPreview({
   const textHPct = (option.BG_BOTTOM_MARGIN / exportH) * 100;
 
   return (
-    <div className="relative flex shrink-0 items-center justify-center" style={{ width: 64, height: 64 }} aria-hidden="true">
+    <div className="relative flex shrink-0 items-center justify-center" style={{ width: size, height: size }} aria-hidden="true">
       <div
         className="relative overflow-hidden"
         style={{

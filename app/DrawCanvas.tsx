@@ -23,11 +23,21 @@ import {
   type InspectableRegion,
 } from './helpers/inspectionHelpers';
 import InspectionCornerDetails from './components/InspectionCornerDetails';
+import {
+  COMPOSITION_PRESETS,
+  type CompositionPresetId,
+} from './settings/compositionPresets';
+import {
+  DEFAULT_RENDER_VISIBILITY,
+  type RenderVisibility,
+} from './settings/renderVisibility';
 
 import {
   clampEllipse,
+  countGlyphOverlaps,
   makeFonts,
   buildParagraphSim,
+  resolveGlyphOverlaps,
   type EllipsePlacement,
   type WordLink,
   type WordNode,
@@ -40,6 +50,7 @@ type CanvasProps = {
   canvasRef: React.RefObject<HTMLCanvasElement | null>;
   bgRef: React.RefObject<HTMLCanvasElement | null>;
   onReadyChange?: (ready: boolean) => void;
+  onBuildStateChange?: (busy: boolean) => void;
   onInspectionHover?: (inspection: CanvasInspection | null) => void;
   onInspectionSelect?: (inspection: CanvasInspection | null) => void;
   activeInspection?: CanvasInspection | null;
@@ -48,6 +59,8 @@ type CanvasProps = {
   onToggleTools?: () => void;
   regionRevisions?: Record<number, number>;
   compositionRevision?: number;
+  compositionPreset?: CompositionPresetId;
+  renderVisibility?: RenderVisibility;
 };
 
 type FixedViewMode = 'fit' | '100' | 'all';
@@ -122,11 +135,9 @@ type CollisionPoint = {
 
 function clampGroup(group: CollisionGroup) {
   for (const node of group.nodes) {
-    const x = node.x ?? group.ellipse.x;
-    const y = node.y ?? group.ellipse.y;
     const clamped = clampEllipse(
-      x,
-      y,
+      node.x ?? group.ellipse.x,
+      node.y ?? group.ellipse.y,
       group.ellipse.x,
       group.ellipse.y,
       group.ellipse.rx,
@@ -274,6 +285,7 @@ export default function DrawCanvas({
   canvasRef,
   bgRef,
   onReadyChange,
+  onBuildStateChange,
   onInspectionHover,
   onInspectionSelect,
   activeInspection,
@@ -282,6 +294,8 @@ export default function DrawCanvas({
   onToggleTools,
   regionRevisions = EMPTY_REGION_REVISIONS,
   compositionRevision = 0,
+  compositionPreset = 'baseline',
+  renderVisibility = DEFAULT_RENDER_VISIBILITY,
 }: CanvasProps) {
   // scale view to wrapper
   const [scale, setScale] = useState(1);
@@ -292,12 +306,34 @@ export default function DrawCanvas({
   const lastHitRef = useRef<CanvasInspection | null>(null);
   const lastHoverIdRef = useRef<string | null>(null);
   const restViewRef = useRef<FixedViewTransform>({ tx: 0, ty: 0, zoom: 1 });
+  const visibilityRef = useRef(renderVisibility);
+  const redrawVisualsRef = useRef<() => void>(() => {});
   const [viewMode, setViewMode] = useState<FixedViewMode>('fit');
 
   const BG_WIDTH = canvasOption.W + 2 * canvasOption.BG_SIDE_MARGIN;
   const BG_HEIGHT = canvasOption.H + canvasOption.BG_TOP_MARGIN + canvasOption.BG_BOTTOM_MARGIN;
   const INNER_X = canvasOption.BG_SIDE_MARGIN;
   const INNER_Y = canvasOption.BG_TOP_MARGIN;
+  // Mobile Safari is prone to reloading the tab when the two poster canvases
+  // and their composited layers are all allocated at export resolution. Keep
+  // the canvas coordinate system intact while using a lighter preview bitmap
+  // on narrow/coarse-pointer devices. Desktop previews remain full resolution.
+  const previewResolution = useMemo(() => {
+    if (typeof window === 'undefined') return 1;
+    const mobileViewport = window.matchMedia('(max-width: 767px)').matches;
+    const coarsePointer = window.matchMedia('(pointer: coarse)').matches;
+    return mobileViewport || coarsePointer ? 0.5 : 1;
+  }, []);
+  const previewWidth = Math.max(1, Math.round(canvasOption.W * previewResolution));
+  const previewHeight = Math.max(1, Math.round(canvasOption.H * previewResolution));
+  const previewBgWidth = Math.max(1, Math.round(BG_WIDTH * previewResolution));
+  const previewBgHeight = Math.max(1, Math.round(BG_HEIGHT * previewResolution));
+  const dynamics = COMPOSITION_PRESETS[compositionPreset].dynamics;
+
+  useEffect(() => {
+    visibilityRef.current = renderVisibility;
+    redrawVisualsRef.current();
+  }, [renderVisibility]);
   const viewZoom = useMemo(() => {
     if (viewMode === 'fit') {
       return Math.min(BG_WIDTH / canvasOption.W, BG_HEIGHT / canvasOption.H);
@@ -444,7 +480,18 @@ export default function DrawCanvas({
       const pointerCamera = cameraForScale(pointerScale);
       const probeX = (screenX - pointerCamera.tx) / pointerScale;
       const probeY = (screenY - pointerCamera.ty) / pointerScale;
-      const { tx, ty } = cameraForScale(targetScale);
+      const minTargetTx = stageRect.width / scale - BG_WIDTH * targetScale;
+      const minTargetTy = stageRect.height / scale - BG_HEIGHT * targetScale;
+      // Keep the canonical fit probe under the physical pointer even when the
+      // selected view uses a different zoom degree (notably 100%).
+      const tx = Math.min(
+        0,
+        Math.max(minTargetTx, screenX - probeX * targetScale),
+      );
+      const ty = Math.min(
+        0,
+        Math.max(minTargetTy, screenY - probeY * targetScale),
+      );
       zoomEl.style.transition = 'none';
       zoomEl.style.transformOrigin = 'top left';
       zoomEl.style.transform = `translate(${tx}px, ${ty}px) scale(${targetScale})`;
@@ -558,19 +605,33 @@ export default function DrawCanvas({
         0,
       );
 
-      return ellipseSizeFromWords(
+      const size = ellipseSizeFromWords(
         wc,
         canvasOption.W - 2 * canvasOption.MARGIN,
         { minS: 220, maxS: 700, mix: 0.1 }
       );
+      return {
+        rx: size.rx * dynamics.regionScale,
+        ry: size.ry * dynamics.regionScale,
+      };
     });
-  }, [structure, canvasOption]);
+  }, [structure, canvasOption, dynamics.regionScale]);
 
   useEffect(() => {
     let cancelled = false;
+    let settled = false;
     let animationFrame = 0;
     const sims: Array<Simulation<WordNode, undefined>> = [];
+    redrawVisualsRef.current = () => {};
     onReadyChange?.(false);
+    onBuildStateChange?.(true);
+
+    const finish = (ready: boolean) => {
+      if (cancelled || settled) return;
+      settled = true;
+      onReadyChange?.(ready);
+      onBuildStateChange?.(false);
+    };
 
     const render = async () => {
       const fg = canvasRef.current;
@@ -597,12 +658,14 @@ export default function DrawCanvas({
         ]);
         if (cancelled) return;
 
-        if (fg.width !== canvasOption.W) fg.width = canvasOption.W;
-        if (fg.height !== canvasOption.H) fg.height = canvasOption.H;
+        if (fg.width !== previewWidth) fg.width = previewWidth;
+        if (fg.height !== previewHeight) fg.height = previewHeight;
         fg.dataset.wordOverlaps = 'settling';
         fg.dataset.renderStage = 'assets-ready';
-        if (bg.width !== BG_WIDTH) bg.width = BG_WIDTH;
-        if (bg.height !== BG_HEIGHT) bg.height = BG_HEIGHT;
+        if (bg.width !== previewBgWidth) bg.width = previewBgWidth;
+        if (bg.height !== previewBgHeight) bg.height = previewBgHeight;
+        ctx.setTransform(previewResolution, 0, 0, previewResolution, 0, 0);
+        bgctx.setTransform(previewResolution, 0, 0, previewResolution, 0, 0);
 
         const IX = INNER_X;
         const IY = INNER_Y;
@@ -627,14 +690,14 @@ export default function DrawCanvas({
         if (packed === 'FAIL') {
           fg.dataset.renderStage = 'pack-failed';
           fg.dataset.wordOverlaps = 'not-rendered';
-          bgctx.clearRect(0, 0, bg.width, bg.height);
+          bgctx.clearRect(0, 0, BG_WIDTH, BG_HEIGHT);
           bgctx.fillStyle = 'white';
-          bgctx.fillRect(0, 0, bg.width, bg.height);
-          ctx.clearRect(0, 0, fg.width, fg.height);
+          bgctx.fillRect(0, 0, BG_WIDTH, BG_HEIGHT);
+          ctx.clearRect(0, 0, canvasOption.W, canvasOption.H);
           ctx.fillStyle = '#b00020';
           ctx.font = `${canvasOption.WORD_SIZE * 2}px Newsreader`;
           ctx.fillText('Content cannot fit, please enter a shorter passage.', 40, 100);
-          onReadyChange?.(false);
+          finish(false);
           return;
         }
 
@@ -647,78 +710,109 @@ export default function DrawCanvas({
           ry: ellipse.ry,
         }));
 
-        bgctx.clearRect(0, 0, bg.width, bg.height);
-        bgctx.fillStyle = 'white';
-        bgctx.fillRect(0, 0, bg.width, bg.height);
-        drawBackgroundGrid(
-          bgctx,
-          IX,
-          IY,
-          IW,
-          IH,
-          canvasOption.GRID_SIZE,
-          0.4,
-          'rgba(255,255,255,0.2)',
-          canvasOption.MARGIN,
-        );
-
-        bgctx.strokeStyle = 'white';
-        bgctx.lineWidth = 1;
-        bgctx.setLineDash([1, 1]);
-        for (let index = 0; index < shifted.length - 1; index += 1) {
-          bgctx.beginPath();
-          bgctx.moveTo(shifted[index].x, shifted[index].y);
-          bgctx.lineTo(shifted[index + 1].x, shifted[index + 1].y);
-          bgctx.stroke();
-        }
-        bgctx.setLineDash([]);
-        shifted.forEach((ellipse, index) => {
-          drawRadialGraph(bgctx, ellipse.x, ellipse.y, ellipse.rx, ellipse.ry, index);
-        });
-        drawAsciiParticles(bgctx, IX, IY, IW, IH, { avoid: shifted, seed: 13 });
-
-        if (noise) {
-          const pattern = bgctx.createPattern(noise, 'repeat');
-          if (pattern) {
-            bgctx.save();
-            bgctx.globalAlpha = 0.7;
-            bgctx.fillStyle = pattern;
-            bgctx.fillRect(IX, IY, IW, IH);
-            bgctx.restore();
-          }
-        }
-
-        // Keep every asynchronous asset inside this generation and clean the
-        // paper margins only after all inner layers are complete.
-        bgctx.fillStyle = 'white';
-        bgctx.fillRect(0, 0, bg.width, IY);
-        bgctx.fillRect(0, IY + IH, bg.width, bg.height - (IY + IH));
-        bgctx.fillRect(0, 0, IX, bg.height);
-        bgctx.fillRect(IX + IW, 0, bg.width - (IX + IW), bg.height);
-
         const fonts = makeFonts({ family: 'Newsreader', wordPx: canvasOption.WORD_SIZE });
-        if (canvasOption.showTitle) {
-          drawHeader(
+        const drawBackground = () => {
+          if (cancelled) return;
+          const layers = visibilityRef.current;
+          bgctx.clearRect(0, 0, BG_WIDTH, BG_HEIGHT);
+          bgctx.fillStyle = 'white';
+          bgctx.fillRect(0, 0, BG_WIDTH, BG_HEIGHT);
+          drawBackgroundGrid(
             bgctx,
-            passageHeader,
-            canvasOption.BG_SIDE_MARGIN + canvasOption.MARGIN,
-            canvasOption.BG_TOP_MARGIN / 2,
-            { font: fonts.headerFont(canvasOption.HEADER_SIZE), color: '#000' },
+            IX,
+            IY,
+            IW,
+            IH,
+            canvasOption.GRID_SIZE,
+            0.4,
+            layers.grid ? 'rgba(255,255,255,0.2)' : 'rgba(255,255,255,0)',
+            canvasOption.MARGIN,
           );
-        }
-        if (canvasOption.showText) {
-          drawWrappedColumns(bgctx, passageText, {
-            x: canvasOption.BG_SIDE_MARGIN + canvasOption.MARGIN,
-            y: canvasOption.BG_TOP_MARGIN + IH + 40,
-            width: IW - 2 * canvasOption.MARGIN,
-            height: canvasOption.BG_BOTTOM_MARGIN - 80,
-            columns: 4,
-            columnGap: 40,
-            font: fonts.normalFont(),
-            color: '#000',
-            compassImage: compass,
-          });
-        }
+
+          if (layers.ellipseConnectors) {
+            bgctx.strokeStyle = 'white';
+            bgctx.lineWidth = 1;
+            bgctx.setLineDash([1, 1]);
+            for (let index = 0; index < shifted.length - 1; index += 1) {
+              bgctx.beginPath();
+              bgctx.moveTo(shifted[index].x, shifted[index].y);
+              bgctx.lineTo(shifted[index + 1].x, shifted[index + 1].y);
+              bgctx.stroke();
+            }
+            bgctx.setLineDash([]);
+          }
+          if (layers.ellipses || layers.ellipseSpokes || layers.ellipseLabels) {
+            shifted.forEach((ellipse, index) => {
+              drawRadialGraph(
+                bgctx,
+                ellipse.x,
+                ellipse.y,
+                ellipse.rx,
+                ellipse.ry,
+                index,
+                {
+                  visibleBounds: { x: IX, y: IY, width: IW, height: IH },
+                  showEllipse: layers.ellipses,
+                  showSpokes: layers.ellipseSpokes,
+                  showLabel: layers.ellipseLabels,
+                },
+              );
+            });
+          }
+          if (layers.particles) {
+            drawAsciiParticles(bgctx, IX, IY, IW, IH, {
+              avoid: shifted,
+              seed: dynamics.seed,
+            });
+          }
+
+          if (noise) {
+            const pattern = bgctx.createPattern(noise, 'repeat');
+            if (pattern) {
+              bgctx.save();
+              bgctx.globalAlpha = 0.7;
+              bgctx.fillStyle = pattern;
+              bgctx.fillRect(IX, IY, IW, IH);
+              bgctx.restore();
+            }
+          }
+
+          // Keep every asynchronous asset inside this generation and clean the
+          // paper margins only after all inner layers are complete.
+          bgctx.fillStyle = 'white';
+          bgctx.fillRect(0, 0, BG_WIDTH, IY);
+          bgctx.fillRect(0, IY + IH, BG_WIDTH, BG_HEIGHT - (IY + IH));
+          bgctx.fillRect(0, 0, IX, BG_HEIGHT);
+          bgctx.fillRect(IX + IW, 0, BG_WIDTH - (IX + IW), BG_HEIGHT);
+
+          if (canvasOption.showTitle) {
+            drawHeader(
+              bgctx,
+              passageHeader,
+              canvasOption.BG_SIDE_MARGIN + canvasOption.MARGIN,
+              canvasOption.BG_TOP_MARGIN / 2,
+              {
+                font: fonts.headerFont(canvasOption.HEADER_SIZE),
+                color: '#000',
+                logicalCanvasWidth: BG_WIDTH,
+              },
+            );
+          }
+          if (canvasOption.showText) {
+            drawWrappedColumns(bgctx, passageText, {
+              x: canvasOption.BG_SIDE_MARGIN + canvasOption.MARGIN,
+              y: canvasOption.BG_TOP_MARGIN + IH + 40,
+              width: IW - 2 * canvasOption.MARGIN,
+              height: canvasOption.BG_BOTTOM_MARGIN - 80,
+              columns: 4,
+              columnGap: 40,
+              font: fonts.normalFont(),
+              color: '#000',
+              compassImage: compass,
+            });
+          }
+        };
+        drawBackground();
 
         const paragraphNodes: WordNode[][] = [];
         const paragraphLinks: WordLink[][] = [];
@@ -739,9 +833,10 @@ export default function DrawCanvas({
             tokenizeAndBucket,
             random: seededRandom(
               hashString(
-                `${paragraph}:${structure[paragraph].join(' ')}:${compositionRevision}:${regionRevisions[paragraph] ?? 0}`,
+                `${dynamics.seed}:${paragraph}:${structure[paragraph].join(' ')}:${compositionRevision}:${regionRevisions[paragraph] ?? 0}`,
               ),
             ),
+            dynamics,
           });
           paragraphNodes.push(nodes);
           paragraphLinks.push(links);
@@ -758,39 +853,60 @@ export default function DrawCanvas({
           ellipse: group.ellipse,
         }));
         fg.dataset.renderStage = 'simulations-built';
+        const fieldLayout = compositionPreset === 'field';
         const allNodes = collisionGroups.flatMap((group) => group.nodes);
-        const collisionPoints: CollisionPoint[] = allNodes.map((node) => ({
-          x: node.x,
-          y: node.y,
-          vx: 0,
-          vy: 0,
-          r: node.r,
-        }));
-        const globalCollisionSim = forceSimulation<CollisionPoint>(collisionPoints)
-          .force(
-            'collide',
-            forceCollide<CollisionPoint>()
-              .radius((point) => point.r + 1)
-              .strength(1)
-              .iterations(3),
-          )
-          .alpha(1)
-          .alphaDecay(0.08)
-          .stop();
+        const collisionPoints: CollisionPoint[] = fieldLayout
+          ? []
+          : allNodes.map((node) => ({
+              x: node.x,
+              y: node.y,
+              vx: 0,
+              vy: 0,
+              r: node.r,
+            }));
+        const globalCollisionSim = fieldLayout
+          ? null
+          : forceSimulation<CollisionPoint>(collisionPoints)
+              .force(
+                'collide',
+                forceCollide<CollisionPoint>()
+                  .radius((point) => point.r + 1)
+                  .strength(1)
+                  .iterations(3),
+              )
+              .alpha(1)
+              .alphaDecay(0.08)
+              .stop();
 
         const drawFrame = () => {
           if (cancelled) return;
-          ctx.clearRect(0, 0, fg.width, fg.height);
+          const layers = visibilityRef.current;
+          ctx.clearRect(0, 0, canvasOption.W, canvasOption.H);
           for (const links of paragraphLinks) {
             for (const link of links) {
+              if (
+                (link.kind === 'order' && !layers.orderEdges) ||
+                (link.kind === 'punct' && !layers.punctuationEdges) ||
+                (link.kind === 'samePOS' && !layers.strongPosEdges) ||
+                (link.kind === 'samePOSWeak' && !layers.weakPosEdges)
+              ) {
+                continue;
+              }
               const source = typeof link.source === 'number' ? null : link.source;
               const target = typeof link.target === 'number' ? null : link.target;
               if (!source || !target) continue;
               const dotted = link.kind === 'punct' || source.punctOnly || target.punctOnly;
               const weak = link.kind === 'order';
-              ctx.strokeStyle = weak ? DEEPBLUEGREEN_HEX : 'rgba(255,255,255,0.50)';
+              const sequence = weak || link.kind === 'punct';
+              ctx.strokeStyle = fieldLayout
+                ? sequence
+                  ? DEEPBLUEGREEN_HEX
+                  : 'rgba(255,255,255,0.16)'
+                : weak
+                  ? DEEPBLUEGREEN_HEX
+                  : 'rgba(255,255,255,0.50)';
               ctx.setLineDash(dotted ? [3, 3] : weak ? [1, 2] : []);
-              ctx.lineWidth = weak ? 0.6 : 1;
+              ctx.lineWidth = fieldLayout ? (sequence ? 0.85 : 0.6) : weak ? 0.6 : 1;
               ctx.beginPath();
               ctx.moveTo(source.x ?? 0, source.y ?? 0);
               ctx.lineTo(target.x ?? 0, target.y ?? 0);
@@ -817,8 +933,21 @@ export default function DrawCanvas({
             }
           }
         };
+        redrawVisualsRef.current = () => {
+          drawBackground();
+          drawFrame();
+        };
 
         const tickAll = (ticks: number) => {
+          // Field runs its long, ordered sentence springs without the shared
+          // circular collision pass used by the clustered presets.
+          if (fieldLayout) {
+            for (let tick = 0; tick < ticks; tick += 1) {
+              sims.forEach((simulation) => simulation.tick());
+            }
+            return;
+          }
+          if (!globalCollisionSim) return;
           const bounds = {
             width: canvasOption.W,
             height: canvasOption.H,
@@ -826,7 +955,7 @@ export default function DrawCanvas({
           };
           for (let tick = 0; tick < ticks; tick += 1) {
             sims.forEach((simulation) => simulation.tick());
-            collisionGroups.forEach(clampGroup);
+            collisionGroups.forEach((group) => clampGroup(group));
             collisionPoints.forEach((point, index) => {
               point.x = allNodes[index].x;
               point.y = allNodes[index].y;
@@ -844,6 +973,23 @@ export default function DrawCanvas({
         };
 
         const finishCollisions = () => {
+          if (fieldLayout) {
+            tickAll(64);
+            resolveGlyphOverlaps(allNodes, 96);
+            const overlapCount = countGlyphOverlaps(allNodes);
+            fg.dataset.wordOverlaps = String(overlapCount);
+            fg.dataset.renderStage = 'settled';
+            if (overlapCount > 0) {
+              ctx.clearRect(0, 0, canvasOption.W, canvasOption.H);
+              ctx.fillStyle = '#f0b4b4';
+              ctx.font = '24px Newsreader, serif';
+              ctx.fillText('This passage is too dense to place without overlap.', 40, 80);
+              finish(false);
+              return false;
+            }
+            return true;
+          }
+          if (!globalCollisionSim) return false;
           const bounds = {
             width: canvasOption.W,
             height: canvasOption.H,
@@ -873,11 +1019,11 @@ export default function DrawCanvas({
           fg.dataset.wordOverlaps = String(overlapCount);
           fg.dataset.renderStage = 'settled';
           if (overlapCount > 0) {
-            ctx.clearRect(0, 0, fg.width, fg.height);
+            ctx.clearRect(0, 0, canvasOption.W, canvasOption.H);
             ctx.fillStyle = '#f0b4b4';
             ctx.font = '24px Newsreader, serif';
             ctx.fillText('This passage is too dense to place without overlap.', 40, 80);
-            onReadyChange?.(false);
+            finish(false);
             return false;
           }
           return true;
@@ -888,7 +1034,7 @@ export default function DrawCanvas({
           tickAll(32);
           if (finishCollisions()) {
             drawFrame();
-            onReadyChange?.(true);
+            finish(true);
           }
           return;
         }
@@ -904,19 +1050,19 @@ export default function DrawCanvas({
           } else {
             if (finishCollisions()) {
               drawFrame();
-              onReadyChange?.(true);
+              finish(true);
             }
           }
         };
         animationFrame = window.requestAnimationFrame(advance);
       } catch {
         if (cancelled) return;
-        bgctx.clearRect(0, 0, bg.width, bg.height);
-        ctx.clearRect(0, 0, fg.width, fg.height);
+        bgctx.clearRect(0, 0, BG_WIDTH, BG_HEIGHT);
+        ctx.clearRect(0, 0, canvasOption.W, canvasOption.H);
         ctx.fillStyle = '#f0b4b4';
         ctx.font = '24px Newsreader, serif';
         ctx.fillText('The canvas could not render. Try a shorter passage.', 40, 80);
-        onReadyChange?.(false);
+        finish(false);
       }
     };
 
@@ -924,17 +1070,21 @@ export default function DrawCanvas({
     return () => {
       cancelled = true;
       window.cancelAnimationFrame(animationFrame);
+      redrawVisualsRef.current = () => {};
       sims.forEach((simulation) => simulation.stop());
       inspectionRegionsRef.current = [];
       onReadyChange?.(false);
+      onBuildStateChange?.(false);
     };
   }, [
     BG_WIDTH, BG_HEIGHT,
     INNER_X, INNER_Y,
     canvasOption, canvasRef, bgRef,
+    compositionPreset,
+    previewResolution, previewWidth, previewHeight, previewBgWidth, previewBgHeight,
     passageHeader, passageText,
     paragraphs, regionRevisions, compositionRevision, sizes, structure,
-    onReadyChange,
+    dynamics, onBuildStateChange, onReadyChange,
   ]);
 
   return (
@@ -972,17 +1122,20 @@ export default function DrawCanvas({
             <canvas
               ref={bgRef}
               className="absolute inset-0 z-[1] block"
-              width={BG_WIDTH}
-              height={BG_HEIGHT}
+              width={previewBgWidth}
+              height={previewBgHeight}
+              style={{ width: BG_WIDTH, height: BG_HEIGHT }}
             />
             <canvas
               ref={canvasRef}
               className="absolute z-[6] block"
-              width={canvasOption.W}
-              height={canvasOption.H}
+              width={previewWidth}
+              height={previewHeight}
               style={{
                 top: canvasOption.BG_TOP_MARGIN,
                 left: canvasOption.BG_SIDE_MARGIN,
+                width: canvasOption.W,
+                height: canvasOption.H,
               }}
             />
             {activeInspection && (

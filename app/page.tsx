@@ -15,6 +15,11 @@ import {
   type CanvasInspection,
 } from './helpers/inspectionHelpers';
 import { tokenizeAndBucket } from './helpers/posHelpers';
+import type { CompositionPresetId } from './settings/compositionPresets';
+import {
+  DEFAULT_RENDER_VISIBILITY,
+  type RenderVisibility,
+} from './settings/renderVisibility';
 
 const DrawCanvas = dynamic(() => import('./DrawCanvas'), { ssr: false });
 const InfiniteLiveCanvas = dynamic(() => import('./InfiniteLiveCanvas'), {
@@ -43,6 +48,11 @@ export default function Home() {
   const [compositionRevision, setCompositionRevision] = useState(0);
   const [railWidth, setRailWidth] = useState(360);
   const [railCollapsed, setRailCollapsed] = useState(false);
+  const [compositionPreset, setCompositionPreset] = useState<CompositionPresetId>('baseline');
+  const [compositionBusy, setCompositionBusy] = useState(false);
+  const [renderVisibility, setRenderVisibility] = useState<RenderVisibility>(
+    DEFAULT_RENDER_VISIBILITY,
+  );
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const bgRef = useRef<HTMLCanvasElement | null>(null);
@@ -72,17 +82,27 @@ export default function Home() {
     if (!fg || !bg) return;
 
     const exportCanvas = document.createElement('canvas');
-    exportCanvas.width = bg.width;
-    exportCanvas.height = bg.height;
+    const exportWidth = canvasOption.W + 2 * canvasOption.BG_SIDE_MARGIN;
+    const exportHeight = canvasOption.H
+      + canvasOption.BG_TOP_MARGIN
+      + canvasOption.BG_BOTTOM_MARGIN;
+    exportCanvas.width = exportWidth;
+    exportCanvas.height = exportHeight;
 
     const ctx = exportCanvas.getContext('2d');
     if (!ctx) return;
 
     // 1) background first
-    ctx.drawImage(bg, 0, 0);
+    ctx.drawImage(bg, 0, 0, exportWidth, exportHeight);
 
     // 2) foreground at the SAME offsets you use in layout
-    ctx.drawImage(fg, canvasOption.BG_SIDE_MARGIN, canvasOption.BG_TOP_MARGIN);
+    ctx.drawImage(
+      fg,
+      canvasOption.BG_SIDE_MARGIN,
+      canvasOption.BG_TOP_MARGIN,
+      canvasOption.W,
+      canvasOption.H,
+    );
 
     // Prefer toBlob for big images
     exportCanvas.toBlob((blob) => {
@@ -131,6 +151,13 @@ export default function Home() {
 
   const toggleTools = useCallback(() => {
     setRailCollapsed((collapsed) => !collapsed);
+  }, []);
+
+  const handleCompositionPresetChange = useCallback((preset: CompositionPresetId) => {
+    setCompositionPreset(preset);
+    setHoveredInspection(null);
+    setSelectedInspection(null);
+    setRenderReady(false);
   }, []);
 
   const handleSave = useCallback((
@@ -216,6 +243,7 @@ export default function Home() {
                   canvasRef={canvasRef}
                   bgRef={bgRef}
                   onReadyChange={setRenderReady}
+                  onBuildStateChange={setCompositionBusy}
                   onInspectionHover={handleInspectionHover}
                   onInspectionSelect={handleInspectionSelect}
                   activeInspection={activeInspection}
@@ -224,6 +252,8 @@ export default function Home() {
                   onToggleTools={toggleTools}
                   regionRevisions={regionRevisions}
                   compositionRevision={compositionRevision}
+                  compositionPreset={compositionPreset}
+                  renderVisibility={renderVisibility}
                 />
               ) : (
                 <InfiniteLiveCanvas
@@ -232,6 +262,7 @@ export default function Home() {
                   canvasOption={canvasOption}
                   canvasRef={liveCanvasRef}
                   onReadyChange={setRenderReady}
+                  onBuildStateChange={setCompositionBusy}
                   onInspectionHover={handleInspectionHover}
                   onInspectionSelect={handleInspectionSelect}
                   activeInspection={activeInspection}
@@ -240,6 +271,8 @@ export default function Home() {
                   onToggleTools={toggleTools}
                   regionRevisions={regionRevisions}
                   compositionRevision={compositionRevision}
+                  compositionPreset={compositionPreset}
+                  renderVisibility={renderVisibility}
                 />
               )
             )}
@@ -283,6 +316,11 @@ export default function Home() {
                 }}
                 onRecomposeRegion={recomposeRegion}
                 onRecompose={recomposeCanvas}
+                compositionPreset={compositionPreset}
+                compositionBusy={compositionBusy}
+                onCompositionPresetChange={handleCompositionPresetChange}
+                renderVisibility={renderVisibility}
+                onRenderVisibilityChange={setRenderVisibility}
             />
               </div>
             )}
