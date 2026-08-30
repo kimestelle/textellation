@@ -123,10 +123,6 @@ export default function TextEditModal({
 
   useEffect(() => {
     if (!pendingPreset || compositionBusy || !onCompositionPresetChange) return;
-    if (pendingPreset === compositionPreset) {
-      setPendingPreset(null);
-      return;
-    }
     const timer = window.setTimeout(() => {
       onCompositionPresetChange(pendingPreset);
       setPendingPreset(null);
@@ -157,7 +153,6 @@ export default function TextEditModal({
       if (!text.trim() || !trimmedHeader) {
         if (version !== autoVersionRef.current) return;
         lastSubmittedRef.current = signature;
-        lastPreparedContentRef.current = nextContentSignature;
         setIsPreparing(false);
         setNote('Add a header and some text to render the canvas.');
         onSave(text, trimmedHeader, canvasSetting, { kind: 'automatic' });
@@ -188,8 +183,18 @@ export default function TextEditModal({
         if (!result.ok) parts.push('This passage could not fit at a readable size.');
         setNote(parts.join(' '));
         if (!result.ok) return;
-        lastSubmittedRef.current = signature;
-        lastPreparedContentRef.current = nextContentSignature;
+        const boundedSignature = draftSignature(
+          result.boundedText,
+          trimmedHeader,
+          canvasSetting,
+        );
+        const boundedContentSignature = contentSignature(
+          result.boundedText,
+          canvasSetting,
+        );
+        lastSubmittedRef.current = boundedSignature;
+        lastPreparedContentRef.current = boundedContentSignature;
+        if (result.boundedText !== text) setText(result.boundedText);
         onSave(result.boundedText, trimmedHeader, canvasSetting, { kind: 'automatic' });
       } catch {
         if (version !== autoVersionRef.current) return;
@@ -261,10 +266,7 @@ export default function TextEditModal({
   return (
     <div className="relative flex h-fit w-full flex-col items-start gap-7">
       <section className="flex w-full flex-col gap-2" aria-labelledby="rail-text-heading">
-        <div className="flex w-full flex-row items-baseline">
-          <h3 id="rail-text-heading">1 text</h3>
-          <span className="mb-2 ml-2 flex-grow border-b border-dashed border-neutral-500" />
-        </div>
+        <h3 id="rail-text-heading" className="rail-heading">1. text</h3>
         <input
           type="text"
           aria-label="Header"
@@ -316,10 +318,7 @@ export default function TextEditModal({
       </section>
 
       <section className="flex w-full flex-col gap-3" aria-labelledby="rail-composition-heading">
-        <div className="flex w-full flex-row items-baseline">
-          <h3 id="rail-composition-heading">2 composition</h3>
-          <span className="mb-2 ml-2 flex-grow border-b border-dashed border-neutral-500" />
-        </div>
+        <h3 id="rail-composition-heading" className="rail-heading">2. composition</h3>
         <div className="flex w-full flex-col gap-1" role="group" aria-label="Canvas format">
           {CANVAS_OPTIONS.map((option) => {
             const active = option.id === canvasSetting.id;
@@ -393,10 +392,7 @@ export default function TextEditModal({
       </section>
 
       <section className="flex w-full flex-col gap-3 pb-2" aria-labelledby="rail-output-heading">
-        <div className="flex w-full flex-row items-baseline">
-          <h3 id="rail-output-heading">3 output</h3>
-          <span className="mb-2 ml-2 flex-grow border-b border-dashed border-neutral-500" />
-        </div>
+        <h3 id="rail-output-heading" className="rail-heading">3. output</h3>
         <div className="flex items-center justify-between gap-3">
           <span className="status-signal text-[11px] text-neutral-500" role="status">
             {isPreparing
@@ -418,11 +414,8 @@ export default function TextEditModal({
         </div>
       </section>
 
-      <section className="flex w-full flex-col gap-3 pb-8" aria-labelledby="rail-knobs-heading">
-        <div className="flex w-full flex-row items-baseline">
-          <h3 id="rail-knobs-heading">more knobs</h3>
-          <span className="mb-2 ml-2 flex-grow border-b border-dashed border-neutral-500" />
-        </div>
+      <section className="mt-5 flex w-full flex-col gap-3 border-t border-white/20 pb-8 pt-5" aria-labelledby="rail-knobs-heading">
+        <h3 id="rail-knobs-heading" className="rail-heading">more knobs</h3>
         <div className="flex w-full flex-col gap-2" role="group" aria-label="Composition preset">
           {COMPOSITION_PRESET_CHOICES.map((preset) => {
             const shownPreset = pendingPreset ?? compositionPreset;

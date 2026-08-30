@@ -1,7 +1,7 @@
 'use client';
 
 import dynamic from 'next/dynamic';
-import { useMemo, useRef, useState, useCallback, useEffect, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react';
+import { useMemo, useRef, useState, useCallback, useEffect, useLayoutEffect, type CSSProperties, type PointerEvent as ReactPointerEvent } from 'react';
 import {
   CANVAS_OPTIONS,
   CanvasOption,
@@ -17,7 +17,7 @@ import {
 import { tokenizeAndBucket } from './helpers/posHelpers';
 import type { CompositionPresetId } from './settings/compositionPresets';
 import {
-  DEFAULT_RENDER_VISIBILITY,
+  PRESET_RENDER_VISIBILITY,
   type RenderVisibility,
 } from './settings/renderVisibility';
 
@@ -59,7 +59,7 @@ export default function Home() {
   const [compositionBusy, setCompositionBusy] = useState(false);
   const [compositionQueued, setCompositionQueued] = useState(false);
   const [renderVisibility, setRenderVisibility] = useState<RenderVisibility>(
-    DEFAULT_RENDER_VISIBILITY,
+    PRESET_RENDER_VISIBILITY.baseline,
   );
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -74,69 +74,108 @@ export default function Home() {
   const applyingSaveRef = useRef(false);
   const queuedSaveRef = useRef<PendingSave | null>(null);
   const flushFrameRef = useRef<number | null>(null);
+  const specimenScrollFrameRef = useRef<number | null>(null);
+  const exportBusyRef = useRef(false);
 
   useEffect(() => () => {
     if (flushFrameRef.current !== null) {
       window.cancelAnimationFrame(flushFrameRef.current);
     }
+    if (specimenScrollFrameRef.current !== null) {
+      window.cancelAnimationFrame(specimenScrollFrameRef.current);
+    }
   }, []);
   
   const exportCanvasHandler = useCallback(async () => {
-    if (!renderReady) return;
+    if (!renderReady || exportBusyRef.current) return;
+    exportBusyRef.current = true;
+    const releaseExport = () => {
+      exportBusyRef.current = false;
+    };
     if (!isFixedCanvasOption(canvasOption)) {
       const live = liveCanvasRef.current;
-      if (!live) return;
-      live.toBlob((blob) => {
-        if (!blob) return;
-        const url = URL.createObjectURL(blob);
-        const link = document.createElement('a');
-        link.download = `${safeFilename(passageHeader || 'textellation')}-live-view.png`;
-        link.href = url;
-        link.click();
-        window.setTimeout(() => URL.revokeObjectURL(url), 1000);
-      }, 'image/png');
+      if (!live) {
+        releaseExport();
+        return;
+      }
+      try {
+        live.toBlob((blob) => {
+          releaseExport();
+          if (!blob) return;
+          const url = URL.createObjectURL(blob);
+          const link = document.createElement('a');
+          link.download = `${safeFilename(passageHeader || 'textellation')}-live-view.png`;
+          link.href = url;
+          link.click();
+          window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+        }, 'image/png');
+      } catch {
+        releaseExport();
+      }
       return;
     }
 
     const fg = canvasRef.current;
     const bg = bgRef.current;
-    if (!fg || !bg) return;
+    if (!fg || !bg) {
+      releaseExport();
+      return;
+    }
 
     const exportCanvas = document.createElement('canvas');
-    const exportWidth = canvasOption.W + 2 * canvasOption.BG_SIDE_MARGIN;
-    const exportHeight = canvasOption.H
+    const logicalWidth = canvasOption.W + 2 * canvasOption.BG_SIDE_MARGIN;
+    const logicalHeight = canvasOption.H
       + canvasOption.BG_TOP_MARGIN
       + canvasOption.BG_BOTTOM_MARGIN;
-    exportCanvas.width = exportWidth;
-    exportCanvas.height = exportHeight;
+    // Mobile previews are intentionally downsampled. Composite at their native
+    // backing resolution instead of upscaling into an otherwise empty 27 MB
+    // poster surface. Desktop sources remain full-resolution.
+    const scaleX = bg.width / logicalWidth;
+    const scaleY = bg.height / logicalHeight;
+    exportCanvas.width = bg.width;
+    exportCanvas.height = bg.height;
 
     const ctx = exportCanvas.getContext('2d');
-    if (!ctx) return;
+    if (!ctx) {
+      exportCanvas.width = 1;
+      exportCanvas.height = 1;
+      releaseExport();
+      return;
+    }
 
     // 1) background first
-    ctx.drawImage(bg, 0, 0, exportWidth, exportHeight);
+    ctx.drawImage(bg, 0, 0);
 
     // 2) foreground at the SAME offsets you use in layout
     ctx.drawImage(
       fg,
-      canvasOption.BG_SIDE_MARGIN,
-      canvasOption.BG_TOP_MARGIN,
-      canvasOption.W,
-      canvasOption.H,
+      canvasOption.BG_SIDE_MARGIN * scaleX,
+      canvasOption.BG_TOP_MARGIN * scaleY,
+      canvasOption.W * scaleX,
+      canvasOption.H * scaleY,
     );
 
     // Prefer toBlob for big images
-    exportCanvas.toBlob((blob) => {
-      if (!blob) return;
-      const url = URL.createObjectURL(blob);
+    try {
+      exportCanvas.toBlob((blob) => {
+        exportCanvas.width = 1;
+        exportCanvas.height = 1;
+        releaseExport();
+        if (!blob) return;
+        const url = URL.createObjectURL(blob);
 
-      const link = document.createElement('a');
-      link.download = `${safeFilename(passageHeader || 'textellation')}.png`;
-      link.href = url;
-      link.click();
+        const link = document.createElement('a');
+        link.download = `${safeFilename(passageHeader || 'textellation')}.png`;
+        link.href = url;
+        link.click();
 
-      window.setTimeout(() => URL.revokeObjectURL(url), 1000);
-    }, 'image/png');
+        window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+      }, 'image/png');
+    } catch {
+      exportCanvas.width = 1;
+      exportCanvas.height = 1;
+      releaseExport();
+    }
   }, [canvasOption, passageHeader, renderReady]);
 
   const canRender = useMemo(() => {
@@ -175,14 +214,17 @@ export default function Home() {
   }, []);
 
   const handleCompositionPresetChange = useCallback((preset: CompositionPresetId) => {
+    setRenderVisibility({ ...PRESET_RENDER_VISIBILITY[preset] });
+    if (preset === compositionPreset) return;
     setCompositionPreset(preset);
     setHoveredInspection(null);
     setSelectedInspection(null);
     setRenderReady(false);
-  }, []);
+  }, [compositionPreset]);
 
   const commitSave = useCallback((save: PendingSave) => {
     const { text, header, option, context } = save;
+    const formatChanged = option.id !== canvasOptionRef.current.id;
     applyingSaveRef.current = true;
     compositionBusyRef.current = true;
     setCompositionBusy(true);
@@ -194,6 +236,17 @@ export default function Home() {
     setPassageHeader(header);
     setCanvasOption(option);
     setHoveredInspection(null);
+    if (formatChanged && window.matchMedia('(max-width: 1023px)').matches) {
+      if (specimenScrollFrameRef.current !== null) {
+        window.cancelAnimationFrame(specimenScrollFrameRef.current);
+      }
+      specimenScrollFrameRef.current = window.requestAnimationFrame(() => {
+        specimenScrollFrameRef.current = window.requestAnimationFrame(() => {
+          specimenScrollFrameRef.current = null;
+          workspaceRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
+        });
+      });
+    }
     if (context?.kind !== 'region-edit') {
       setSelectedInspection(null);
       setRegionRevisions({});
@@ -300,6 +353,26 @@ export default function Home() {
     }
   }, []);
 
+  useLayoutEffect(() => {
+    const workspace = workspaceRef.current;
+    if (!workspace) return;
+    const clampRail = () => {
+      if (!window.matchMedia('(min-width: 1024px)').matches) return;
+      const maxWidth = Math.min(480, workspace.getBoundingClientRect().width * 0.42);
+      setRailWidth((current) => Math.round(Math.min(maxWidth, Math.max(280, current))));
+    };
+    clampRail();
+    const observer = typeof ResizeObserver === 'undefined'
+      ? null
+      : new ResizeObserver(clampRail);
+    observer?.observe(workspace);
+    window.addEventListener('resize', clampRail);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener('resize', clampRail);
+    };
+  }, []);
+
   return (
     <div className="relative w-full h-full bg-neutral-900">
         {/* top bar */}
@@ -316,9 +389,9 @@ export default function Home() {
         </div>
 
         <div className="w-full min-h-[100svh] px-5 md:px-24 pt-24 pb-16">
-        <div ref={workspaceRef} className="relative flex h-[calc(100svh-6rem-4rem)] w-full flex-col gap-8 overflow-y-auto md:flex-row md:gap-0 md:overflow-visible">
+        <div ref={workspaceRef} data-workspace className="relative flex h-[calc(100svh-6rem-4rem)] w-full flex-col gap-8 overflow-y-auto lg:flex-row lg:gap-0 lg:overflow-visible">
             {/* left */}
-            <div className="flex min-h-[50svh] min-w-0 flex-1 items-center justify-center md:min-h-0">
+            <div className="flex min-h-[50svh] min-w-0 flex-1 items-center justify-center lg:min-h-0">
             {canvasActivated && canRender && (
               isFixedCanvasOption(canvasOption) ? (
                 <DrawCanvas
@@ -343,7 +416,6 @@ export default function Home() {
               ) : (
                 <InfiniteLiveCanvas
                   passageText={passageText}
-                  passageHeader={passageHeader}
                   canvasOption={canvasOption}
                   canvasRef={liveCanvasRef}
                   onReadyChange={setRenderReady}
@@ -365,7 +437,7 @@ export default function Home() {
 
             {!railCollapsed && (
               <div
-                className="group relative hidden w-5 shrink-0 cursor-col-resize touch-none items-stretch justify-center md:flex"
+                className="group relative hidden w-5 shrink-0 cursor-col-resize touch-none items-stretch justify-center lg:flex"
                 role="separator"
                 aria-label="Resize controls rail"
                 aria-orientation="vertical"
@@ -380,12 +452,12 @@ export default function Home() {
 
             {/* right */}
             <aside
-              className="relative min-h-0 w-full shrink-0 overflow-visible md:w-[var(--rail-width)] md:overflow-hidden"
+              className="relative min-h-0 w-full shrink-0 overflow-visible lg:w-[var(--rail-width)] lg:overflow-hidden"
               style={{ '--rail-width': railCollapsed ? '0px' : `${railWidth}px` } as CSSProperties}
               aria-label="Textellation controls"
             >
             {!railCollapsed && (
-              <div className="h-auto pr-1 pt-7 md:h-full md:overflow-y-auto">
+              <div className="h-auto pr-1 pt-7 lg:h-full lg:overflow-y-auto">
             <TextEditModal
                 onSave={handleSave}
                 onDownload={exportCanvasHandler}

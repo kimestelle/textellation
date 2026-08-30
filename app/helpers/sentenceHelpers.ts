@@ -129,6 +129,7 @@ export function resolveGlyphOverlaps(
   nodes: WordNode[],
   passes = 64,
 ) {
+  let clean = true;
   for (let pass = 0; pass < passes; pass += 1) {
     let overlapCount = 0;
     for (let first = 0; first < nodes.length; first += 1) {
@@ -158,8 +159,10 @@ export function resolveGlyphOverlaps(
         }
       }
     }
-    if (overlapCount === 0) break;
+    clean = overlapCount === 0;
+    if (clean) break;
   }
+  return clean;
 }
 
 function pxFromFontPx(px: number) {

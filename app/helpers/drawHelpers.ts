@@ -2,8 +2,7 @@ import { Ellipse } from "./paragraphHelpers";
 import { seededRandom } from "./randomHelpers";
 export const BLUE_HEX = '#272757';
 export const DEEPBLUEGREEN_HEX = '#121c2dff';
-export const REDGREEN_HEX = '#ffffff20';
-let radialGraphScratchCanvas: HTMLCanvasElement | null = null;
+const ELLIPSE_GLOW_RGB = '162,168,209';
 
 function canvasMonoFamily() {
   if (typeof document === 'undefined') return '"Space Mono", monospace';
@@ -46,6 +45,22 @@ export function punctToASCIIStar(punct: string): string {
   return punct;
 }
 
+export function drawBlendedWhiteText(
+  ctx: CanvasRenderingContext2D,
+  text: string,
+  x: number,
+  y: number,
+) {
+  ctx.save();
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.fillStyle = 'rgba(255,255,255,0.78)';
+  ctx.fillText(text, x, y);
+  ctx.globalCompositeOperation = 'soft-light';
+  ctx.fillStyle = 'rgba(255,255,255,0.55)';
+  ctx.fillText(text, x, y);
+  ctx.restore();
+}
+
 export function generateStarPattern(length: number, seed = 0x51a7): string {
   const L = Math.max(0, Math.min(length, 200));
   let pattern = '';
@@ -69,6 +84,9 @@ export function drawRadialGraph(
     spokes?: number;
     baseAlpha?: number;
     lineWidth?: number;
+    lineScale?: number;
+    labelScale?: number;
+    wordCount?: number;
     visibleBounds?: { x: number; y: number; width: number; height: number };
     showSpokes?: boolean;
     showEllipse?: boolean;
@@ -76,106 +94,76 @@ export function drawRadialGraph(
   }
 ) {
   const spokes = opts?.spokes ?? 16;
-  const baseA  = opts?.baseAlpha ?? 0.75;
-  const lw     = opts?.lineWidth ?? 1.5;
+  const baseA  = opts?.baseAlpha ?? 0.9;
+  const lineScale = opts?.lineScale ?? 1;
+  const lw     = (opts?.lineWidth ?? 1.8) * lineScale;
   const showSpokes = opts?.showSpokes ?? true;
   const showEllipse = opts?.showEllipse ?? true;
   const showLabel = opts?.showLabel ?? true;
 
-  if (showSpokes) {
-    // Bound each temporary spoke bitmap. Mobile Safari can retain recently
-    // released canvases for several frames, so sequential full-size ellipses
-    // can otherwise cross its process limit even though only one is live here.
-    const logicalW = rx * 2;
-    const logicalH = ry * 2;
-    const transform = ctx.getTransform();
-    const outputScale = Math.max(
-      Math.hypot(transform.a, transform.b),
-      Math.hypot(transform.c, transform.d),
-    );
-    const maxSpokePixels = 750_000;
-    const budgetScale = Math.sqrt(maxSpokePixels / Math.max(1, logicalW * logicalH));
-    const rasterScale = Math.max(0.25, Math.min(1, outputScale, budgetScale));
-    const w = Math.max(1, Math.ceil(logicalW * rasterScale));
-    const h = Math.max(1, Math.ceil(logicalH * rasterScale));
-    const off = radialGraphScratchCanvas ?? document.createElement('canvas');
-    radialGraphScratchCanvas = off;
-    if (off.width < w) off.width = w;
-    if (off.height < h) off.height = h;
-    const octx = off.getContext('2d');
-    if (!octx) return;
-    octx.setTransform(1, 0, 0, 1, 0, 0);
-    octx.clearRect(0, 0, off.width, off.height);
-    octx.setTransform(rasterScale, 0, 0, rasterScale, 0, 0);
-
-    // 3. draw spokes centered at (w/2, h/2) on the offscreen
-    octx.save();
-    octx.beginPath();
-    octx.ellipse(logicalW / 2, logicalH / 2, rx, ry, 0, 0, Math.PI * 2);
-    octx.clip();
-
-    octx.strokeStyle = 'white';
-    octx.setLineDash?.([1, 1]);
-    octx.lineWidth = lw;
-    octx.globalAlpha = baseA;
-
-    const r = Math.max(rx, ry);
-    for (let i = 0; i < spokes; i++) {
-      const a = (i / spokes) * Math.PI * 2;
-      const x2 = logicalW / 2 + r * Math.cos(a);
-      const y2 = logicalH / 2 + r * Math.sin(a);
-      octx.beginPath();
-      octx.moveTo(logicalW / 2, logicalH / 2);
-      octx.lineTo(x2, y2);
-      octx.stroke();
-    }
-
-    // 4. apply elliptical radial alpha mask on the offscreen ONLY
-    octx.globalAlpha = 1;
-    octx.globalCompositeOperation = 'destination-in';
-
-    // build an elliptical gradient by scaling a circular one
-    octx.save();
-    octx.translate(logicalW / 2, logicalH / 2);
-    octx.scale(1, ry / rx); // circle of radius rx → ellipse rx×ry
-    const grad = octx.createRadialGradient(0, 0, 0, 0, 0, rx);
-    grad.addColorStop(0.0, 'rgba(255,255,255,0.50)'); // 50% at center
-    grad.addColorStop(1.0, 'rgba(255,255,255,0.00)'); // 0% at edge
-    octx.fillStyle = grad;
-    octx.beginPath();
-    octx.arc(0, 0, rx, 0, Math.PI * 2);
-    octx.fill();
-    octx.restore();
-
-    octx.restore();
-    octx.globalCompositeOperation = 'source-over';
-
-    ctx.drawImage(
-      off,
-      0,
-      0,
-      w,
-      h,
-      Math.round(cx - rx),
-      Math.round(cy - ry),
-      logicalW,
-      logicalH,
-    );
-  }
-
   if (showEllipse) {
     ctx.save();
-    const fillRx = rx * 1.7;
-    const fillRy = ry * 1.7;
+    const wordCount = Math.max(1, opts?.wordCount ?? 24);
+    const baseGlowScale = Math.max(1.3, 1.15 + Math.sqrt(wordCount) * 0.11);
+    const glowScale = Math.min(2.75, Math.max(1.65, baseGlowScale * 1.28));
+    const fillRx = rx * glowScale;
+    const fillRy = ry * glowScale;
     const fillGrad = ctx.createRadialGradient(cx, cy, 0, cx, cy, fillRx);
-    fillGrad.addColorStop(0.0, REDGREEN_HEX);
-    fillGrad.addColorStop(0.9, 'rgba(39,39,87,0.0)');
+    // A three-sigma-style falloff: one hue throughout avoids the pale center
+    // and blue fringe produced by interpolating between unrelated colors.
+    fillGrad.addColorStop(0.0, `rgba(${ELLIPSE_GLOW_RGB},0.135)`);
+    fillGrad.addColorStop(0.22, `rgba(${ELLIPSE_GLOW_RGB},0.109)`);
+    fillGrad.addColorStop(0.45, `rgba(${ELLIPSE_GLOW_RGB},0.054)`);
+    fillGrad.addColorStop(0.68, `rgba(${ELLIPSE_GLOW_RGB},0.017)`);
+    fillGrad.addColorStop(0.86, `rgba(${ELLIPSE_GLOW_RGB},0.004)`);
+    fillGrad.addColorStop(1.0, `rgba(${ELLIPSE_GLOW_RGB},0)`);
     ctx.fillStyle = fillGrad;
     ctx.beginPath();
     ctx.ellipse(cx, cy, fillRx, fillRy, 0, 0, Math.PI * 2);
     ctx.fill();
     ctx.restore();
+  }
 
+  if (showSpokes) {
+    const spokeRadius = Math.max(rx, ry);
+    ctx.save();
+    ctx.beginPath();
+    ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
+    ctx.clip();
+
+    // A restrained pale offset catches one edge; the multiplied face remains
+    // dark, matching the ellipse-to-ellipse connectors and burned numerals.
+    ctx.globalAlpha = baseA;
+    ctx.strokeStyle = 'rgba(255,255,255,0.11)';
+    ctx.lineWidth = lw;
+    ctx.setLineDash([3, 3]);
+    for (let i = 0; i < spokes; i++) {
+      const angle = (i / spokes) * Math.PI * 2;
+      ctx.beginPath();
+      ctx.moveTo(cx + 1.1, cy + 1.1);
+      ctx.lineTo(
+        cx + spokeRadius * Math.cos(angle) + 1.1,
+        cy + spokeRadius * Math.sin(angle) + 1.1,
+      );
+      ctx.stroke();
+    }
+
+    ctx.globalCompositeOperation = 'multiply';
+    const burn = ctx.createRadialGradient(cx, cy, 0, cx, cy, spokeRadius);
+    burn.addColorStop(0, 'rgba(15,11,32,0.92)');
+    burn.addColorStop(1, 'rgba(15,11,32,0.68)');
+    ctx.strokeStyle = burn;
+    for (let i = 0; i < spokes; i++) {
+      const angle = (i / spokes) * Math.PI * 2;
+      ctx.beginPath();
+      ctx.moveTo(cx, cy);
+      ctx.lineTo(
+        cx + spokeRadius * Math.cos(angle),
+        cy + spokeRadius * Math.sin(angle),
+      );
+      ctx.stroke();
+    }
+    ctx.restore();
   }
 
   // Put the region numeral on one of the ellipse's cardinal boundaries. In
@@ -186,7 +174,7 @@ export function drawRadialGraph(
   const labelAngle = labelAngles[index % labelAngles.length];
   let labelX = cx + rx * Math.cos(labelAngle);
   let labelY = cy + ry * Math.sin(labelAngle);
-  const labelSize = 100;
+  const labelSize = 100 * (opts?.labelScale ?? 1);
   const labelInset = labelSize * 0.58;
   if (opts?.visibleBounds) {
     const bounds = opts.visibleBounds;
@@ -207,12 +195,37 @@ export function drawRadialGraph(
   ctx.textBaseline = 'middle';
 
   // A restrained deboss: the pale offset catches the lower edge while the
-  // multiplied face sinks into the field. The later noise pass unifies both.
+  // multiplied face sinks into the field.
   ctx.fillStyle = 'rgba(255,255,255,0.09)';
   ctx.fillText(roman, labelX + 1.5, labelY + 1.5);
   ctx.globalCompositeOperation = 'multiply';
   ctx.fillStyle = 'rgba(22,18,42,0.58)';
   ctx.fillText(roman, labelX, labelY);
+  ctx.restore();
+}
+
+export function drawBurnedEllipseConnector(
+  ctx: CanvasRenderingContext2D,
+  first: { x: number; y: number },
+  second: { x: number; y: number },
+  lineScale = 1,
+) {
+  ctx.save();
+  ctx.lineWidth = 1.8 * lineScale;
+  ctx.setLineDash([3, 3]);
+
+  ctx.strokeStyle = 'rgba(255,255,255,0.11)';
+  ctx.beginPath();
+  ctx.moveTo(first.x + 1.1, first.y + 1.1);
+  ctx.lineTo(second.x + 1.1, second.y + 1.1);
+  ctx.stroke();
+
+  ctx.globalCompositeOperation = 'multiply';
+  ctx.strokeStyle = 'rgba(15,11,32,0.86)';
+  ctx.beginPath();
+  ctx.moveTo(first.x, first.y);
+  ctx.lineTo(second.x, second.y);
+  ctx.stroke();
   ctx.restore();
 }
 

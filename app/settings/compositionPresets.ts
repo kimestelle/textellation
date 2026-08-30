@@ -29,7 +29,7 @@ export type CompositionPreset = {
 export const COMPOSITION_PRESETS: Record<CompositionPresetId, CompositionPreset> = {
   baseline: {
     id: 'baseline',
-    label: 'Baseline',
+    label: 'Balanced',
     description: 'the original balanced composition',
     dynamics: {
       seed: 1009,
@@ -120,6 +120,7 @@ export const COMPOSITION_PRESETS: Record<CompositionPresetId, CompositionPreset>
 };
 
 export const COMPOSITION_PRESET_CHOICES = [
+  COMPOSITION_PRESETS.baseline,
   COMPOSITION_PRESETS.orbit,
   COMPOSITION_PRESETS.compression,
   COMPOSITION_PRESETS.fracture,

@@ -39,6 +39,14 @@ h3 {
   font-size: 1em;
 }
 
+.rail-heading {
+  margin: 0;
+  font-family: var(--font-newsreader), serif;
+  font-size: 1rem;
+  font-weight: 400;
+  line-height: 1;
+}
+
 textarea, input {
   background: url('/noisy.png');
   background-size: 100px 100px;

@@ -30,6 +30,8 @@ import {
   BLUE_HEX,
   DEEPBLUEGREEN_HEX,
   drawAsciiParticles,
+  drawBlendedWhiteText,
+  drawBurnedEllipseConnector,
   drawRadialGraph,
   punctToASCIIStar,
 } from './helpers/drawHelpers';
@@ -70,7 +72,6 @@ type LiveModel = {
 
 type Props = {
   passageText: string;
-  passageHeader: string;
   canvasOption: InfiniteCanvasOption;
   canvasRef: React.RefObject<HTMLCanvasElement | null>;
   onReadyChange?: (ready: boolean) => void;
@@ -198,7 +199,7 @@ function drawInfiniteBackground(
   while (adaptiveGrid * scale < 7) adaptiveGrid *= 2;
   context.save();
   context.strokeStyle = 'rgba(255,255,255,0.20)';
-  context.lineWidth = 0.4;
+  context.lineWidth = 0.4 * 0.75;
   context.setLineDash([1, 1]);
   const left = Math.floor(visible.x / adaptiveGrid) * adaptiveGrid;
   const right = Math.ceil((visible.x + visible.width) / adaptiveGrid) * adaptiveGrid;
@@ -286,7 +287,7 @@ function drawRegion(
         ? DEEPBLUEGREEN_HEX
         : 'rgba(255,255,255,0.52)';
     context.setLineDash(dotted ? [3, 3] : weak ? [1, 2] : []);
-    context.lineWidth = fieldMode ? (sequence ? 0.85 : 0.6) : weak ? 0.6 : 1;
+    context.lineWidth = (fieldMode ? (sequence ? 0.85 : 0.6) : weak ? 0.6 : 1) * 0.75;
     context.beginPath();
     context.moveTo(source.x ?? 0, source.y ?? 0);
     context.lineTo(target.x ?? 0, target.y ?? 0);
@@ -302,8 +303,8 @@ function drawRegion(
     else if (node.bucket === 'NOUN') context.font = fonts.nounFont();
     else if (node.bucket === 'VERB') context.font = fonts.verbFont();
     else context.font = fonts.normalFont();
-    context.fillStyle = 'white';
-    context.fillText(
+    drawBlendedWhiteText(
+      context,
       node.punctOnly ? punctToASCIIStar(node.text) : node.text,
       node.x ?? 0,
       node.y ?? 0,
@@ -366,7 +367,6 @@ function InfiniteInspectionMarker({
 
 export default function InfiniteLiveCanvas({
   passageText,
-  passageHeader,
   canvasOption,
   canvasRef,
   onReadyChange,
@@ -386,7 +386,10 @@ export default function InfiniteLiveCanvas({
   const geometryCacheRef = useRef(new Map<string, RegionGeometry>());
   const viewportRef = useRef({ width: 0, height: 0 });
   const viewRef = useRef<ViewTransform>({ x: 0, y: 0, scale: 0.7 });
+  const renderedViewRef = useRef<ViewTransform>(viewRef.current);
   const viewFrameRef = useRef(0);
+  const gestureFrameRef = useRef(0);
+  const gestureActiveRef = useRef(false);
   const dragRef = useRef<{
     pointerId: number;
     clientX: number;
@@ -448,6 +451,23 @@ export default function InfiniteLiveCanvas({
     [canvasOption.MAX_ZOOM, canvasOption.MIN_ZOOM],
   );
 
+  const scheduleGestureTransform = useCallback(() => {
+    if (gestureFrameRef.current) return;
+    gestureFrameRef.current = window.requestAnimationFrame(() => {
+      gestureFrameRef.current = 0;
+      if (!gestureActiveRef.current) return;
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+      const painted = renderedViewRef.current;
+      const current = viewRef.current;
+      const ratio = current.scale / Math.max(0.0001, painted.scale);
+      const x = current.x - painted.x * ratio;
+      const y = current.y - painted.y * ratio;
+      canvas.style.transformOrigin = '0 0';
+      canvas.style.transform = `translate3d(${x}px, ${y}px, 0) scale(${ratio})`;
+    });
+  }, [canvasRef]);
+
   const scheduleView = useCallback(
     (next: ViewTransform | ((current: ViewTransform) => ViewTransform)) => {
       const resolved = typeof next === 'function' ? next(viewRef.current) : next;
@@ -456,13 +476,17 @@ export default function InfiniteLiveCanvas({
         y: Number.isFinite(resolved.y) ? resolved.y : 0,
         scale: clampScale(resolved.scale),
       };
+      if (gestureActiveRef.current) {
+        scheduleGestureTransform();
+        return;
+      }
       if (viewFrameRef.current) return;
       viewFrameRef.current = window.requestAnimationFrame(() => {
         viewFrameRef.current = 0;
         setView(viewRef.current);
       });
     },
-    [clampScale],
+    [clampScale, scheduleGestureTransform],
   );
 
   const fitAll = useCallback(() => {
@@ -578,7 +602,10 @@ export default function InfiniteLiveCanvas({
   );
 
   useEffect(() => {
-    return () => window.cancelAnimationFrame(viewFrameRef.current);
+    return () => {
+      window.cancelAnimationFrame(viewFrameRef.current);
+      window.cancelAnimationFrame(gestureFrameRef.current);
+    };
   }, []);
 
   useEffect(() => {
@@ -620,11 +647,19 @@ export default function InfiniteLiveCanvas({
   useEffect(() => {
     const wrapper = wrapperRef.current;
     if (!wrapper) return;
+    let resizeFrame = 0;
     const update = () => {
+      resizeFrame = 0;
       const rect = wrapper.getBoundingClientRect();
       if (!rect.width || !rect.height) return;
       const previous = viewportRef.current;
       const next = { width: rect.width, height: rect.height };
+      if (
+        Math.abs(previous.width - next.width) < 0.5 &&
+        Math.abs(previous.height - next.height) < 0.5
+      ) {
+        return;
+      }
       viewportRef.current = next;
       setViewport(next);
       if (!previous.width || !previous.height || !hasCenteredRef.current) return;
@@ -638,15 +673,20 @@ export default function InfiniteLiveCanvas({
         };
       });
     };
+    const scheduleUpdate = () => {
+      if (resizeFrame) return;
+      resizeFrame = window.requestAnimationFrame(update);
+    };
     update();
     const observer = typeof ResizeObserver === 'undefined'
       ? null
-      : new ResizeObserver(update);
+      : new ResizeObserver(scheduleUpdate);
     observer?.observe(wrapper);
-    window.addEventListener('resize', update);
+    window.addEventListener('resize', scheduleUpdate);
     return () => {
+      window.cancelAnimationFrame(resizeFrame);
       observer?.disconnect();
-      window.removeEventListener('resize', update);
+      window.removeEventListener('resize', scheduleUpdate);
     };
   }, [scheduleView]);
 
@@ -654,11 +694,37 @@ export default function InfiniteLiveCanvas({
     let cancelled = false;
     const simulations: Array<Simulation<WordNode, undefined>> = [];
     const workingCache = new Map(geometryCacheRef.current);
+    const constrainedBuild = window.matchMedia(
+      '(max-width: 1023px), (pointer: coarse)',
+    ).matches;
     hasCenteredRef.current = false;
     setIsBuilding(true);
     setError('');
     onReadyChange?.(false);
     onBuildStateChange?.(true);
+
+    const yieldBuild = () => new Promise<void>((resolve) => {
+      if (document.hidden) {
+        window.setTimeout(resolve, 0);
+        return;
+      }
+      window.requestAnimationFrame(() => resolve());
+    });
+
+    const settleGlyphOverlaps = async (
+      nodes: WordNode[],
+      passes: number,
+      mobileChunk: number,
+    ) => {
+      if (!constrainedBuild) return resolveGlyphOverlaps(nodes, passes);
+      let clean = false;
+      for (let pass = 0; pass < passes; pass += mobileChunk) {
+        clean = resolveGlyphOverlaps(nodes, Math.min(mobileChunk, passes - pass));
+        if (clean || cancelled) break;
+        if (pass + mobileChunk < passes) await yieldBuild();
+      }
+      return clean;
+    };
 
     const build = async () => {
       try {
@@ -741,7 +807,8 @@ export default function InfiniteLiveCanvas({
               for (let tick = 0; tick < 96; tick += 1) {
                 built.sim.tick();
               }
-              resolveGlyphOverlaps(built.nodes, 96);
+              await settleGlyphOverlaps(built.nodes, 96, 24);
+              if (cancelled) return;
               if (countGlyphOverlaps(built.nodes) > 0) {
                 throw new Error('This passage is too dense to place without overlap.');
               }
@@ -792,7 +859,8 @@ export default function InfiniteLiveCanvas({
               worldNodes.push(node);
             }
           }
-          resolveGlyphOverlaps(worldNodes, 96);
+          await settleGlyphOverlaps(worldNodes, 96, 4);
+          if (cancelled) return;
           for (const region of regions) {
             let minX = region.ellipse.x;
             let minY = region.ellipse.y;
@@ -891,13 +959,17 @@ export default function InfiniteLiveCanvas({
       onReadyChange?.(false);
       return;
     }
-    const maxDimension = 4096;
-    const maxPixels = 16_000_000;
+    const constrainedDevice = window.matchMedia(
+      '(max-width: 1023px), (pointer: coarse)',
+    ).matches;
+    const maxDimension = constrainedDevice ? 3072 : 4096;
+    const maxPixels = constrainedDevice ? 4_000_000 : 16_000_000;
+    const maxPixelRatio = constrainedDevice ? 1.5 : 2;
     const pixelRatio = Math.max(
       0.25,
       Math.min(
         window.devicePixelRatio || 1,
-        2,
+        maxPixelRatio,
         maxDimension / viewport.width,
         maxDimension / viewport.height,
         Math.sqrt(maxPixels / (viewport.width * viewport.height)),
@@ -909,6 +981,17 @@ export default function InfiniteLiveCanvas({
     if (canvas.height !== height) canvas.height = height;
     context.setTransform(1, 0, 0, 1, 0, 0);
     context.clearRect(0, 0, width, height);
+    const texture = noiseRef.current;
+    const texturePattern = texture ? context.createPattern(texture, 'repeat') : null;
+    const drawScreenGrain = (alpha: number) => {
+      if (!texturePattern) return;
+      context.save();
+      context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
+      context.globalAlpha = alpha;
+      context.fillStyle = texturePattern;
+      context.fillRect(0, 0, viewport.width, viewport.height);
+      context.restore();
+    };
 
     const visible = {
       x: -view.x / view.scale,
@@ -938,22 +1021,15 @@ export default function InfiniteLiveCanvas({
       view.scale,
       renderVisibility.grid,
     );
+    drawScreenGrain(0.62);
 
     if (model) {
       if (renderVisibility.ellipseConnectors) {
-        context.save();
-        context.strokeStyle = 'white';
-        context.lineWidth = 1;
-        context.setLineDash([1, 1]);
         for (let index = 0; index < model.regions.length - 1; index += 1) {
           const first = model.regions[index].ellipse;
           const second = model.regions[index + 1].ellipse;
-          context.beginPath();
-          context.moveTo(first.x, first.y);
-          context.lineTo(second.x, second.y);
-          context.stroke();
+          drawBurnedEllipseConnector(context, first, second, 0.75);
         }
-        context.restore();
       }
       const visibleRegions = model.regions.filter((region) =>
         compositionPreset === 'field' && region.contentBounds
@@ -975,6 +1051,9 @@ export default function InfiniteLiveCanvas({
             model.regions.indexOf(region),
             {
               visibleBounds: visible,
+              lineScale: 0.75,
+              labelScale: 0.6,
+              wordCount: region.nodes.filter((node) => !node.punctOnly).length,
               showEllipse: renderVisibility.ellipses,
               showSpokes: renderVisibility.ellipseSpokes,
               showLabel: renderVisibility.ellipseLabels,
@@ -1000,33 +1079,12 @@ export default function InfiniteLiveCanvas({
         );
       });
 
-      context.save();
-      context.fillStyle = 'rgba(255,255,255,0.88)';
-      context.font = makeFonts({ family: 'Newsreader', wordPx: canvasOption.WORD_SIZE })
-        .headerFont(34);
-      context.textAlign = 'left';
-      context.textBaseline = 'top';
-      const first = model.regions[0].ellipse;
-      context.fillText(
-        passageHeader,
-        compositionPreset === 'field' ? model.bounds.x + REGION_PADDING / 2 : first.x - first.rx * REGION_HALO,
-        compositionPreset === 'field' ? model.bounds.y + REGION_PADDING / 2 : first.y - first.ry * REGION_HALO,
-      );
-      context.restore();
     }
 
-    const texture = noiseRef.current;
-    if (texture) {
-      context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
-      const pattern = context.createPattern(texture, 'repeat');
-      if (pattern) {
-        context.globalAlpha = 0.7;
-        context.fillStyle = pattern;
-        context.fillRect(0, 0, viewport.width, viewport.height);
-        context.globalAlpha = 1;
-      }
-    }
     context.setTransform(1, 0, 0, 1, 0, 0);
+    renderedViewRef.current = view;
+    canvas.style.transform = '';
+    canvas.style.transformOrigin = '0 0';
     onReadyChange?.(!isBuilding && Boolean(model) && !error);
   }, [
     canvasOption,
@@ -1036,7 +1094,6 @@ export default function InfiniteLiveCanvas({
     error,
     isBuilding,
     onReadyChange,
-    passageHeader,
     renderVisibility,
     textureVersion,
     view,
@@ -1052,12 +1109,13 @@ export default function InfiniteLiveCanvas({
       x: event.clientX - rect.left,
       y: event.clientY - rect.top,
     });
+    if (event.pointerType !== 'mouse') gestureActiveRef.current = true;
     const pointers = [...pointersRef.current.entries()];
     if (pointers.length >= 2) {
       const first = pointers[0][1];
       const second = pointers[1][1];
       pinchRef.current = {
-        distance: Math.max(1, Math.hypot(second.x - first.x, second.y - first.y)),
+        distance: Math.max(16, Math.hypot(second.x - first.x, second.y - first.y)),
         midpoint: {
           x: (first.x + second.x) / 2,
           y: (first.y + second.y) / 2,
@@ -1101,7 +1159,8 @@ export default function InfiniteLiveCanvas({
         x: (first.x + second.x) / 2,
         y: (first.y + second.y) / 2,
       };
-      const scale = clampScale(pinch.view.scale * (distance / pinch.distance));
+      const gestureRatio = Math.min(4, Math.max(0.25, distance / pinch.distance));
+      const scale = clampScale(pinch.view.scale * gestureRatio);
       const worldX = (pinch.midpoint.x - pinch.view.x) / pinch.view.scale;
       const worldY = (pinch.midpoint.y - pinch.view.y) / pinch.view.scale;
       scheduleView({
@@ -1121,6 +1180,7 @@ export default function InfiniteLiveCanvas({
   };
 
   const endPan = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (!pointersRef.current.has(event.pointerId)) return;
     const rect = event.currentTarget.getBoundingClientRect();
     const drag = dragRef.current;
     const wasClick = pointersRef.current.size === 1 &&
@@ -1142,7 +1202,7 @@ export default function InfiniteLiveCanvas({
       const first = remaining[0][1];
       const second = remaining[1][1];
       pinchRef.current = {
-        distance: Math.max(1, Math.hypot(second.x - first.x, second.y - first.y)),
+        distance: Math.max(16, Math.hypot(second.x - first.x, second.y - first.y)),
         midpoint: {
           x: (first.x + second.x) / 2,
           y: (first.y + second.y) / 2,
@@ -1162,6 +1222,11 @@ export default function InfiniteLiveCanvas({
     } else {
       dragRef.current = null;
       setIsPanning(false);
+      const deferredGesture = gestureActiveRef.current;
+      gestureActiveRef.current = false;
+      window.cancelAnimationFrame(gestureFrameRef.current);
+      gestureFrameRef.current = 0;
+      if (deferredGesture) setView({ ...viewRef.current });
     }
     if (wasClick) {
       emitInspectionHover(clickedInspection);
@@ -1212,18 +1277,18 @@ export default function InfiniteLiveCanvas({
         className="absolute inset-0 block w-full h-full"
         aria-hidden="true"
       />
-      {activeInspection && (
+      {activeInspection && !isPanning && (
         <InfiniteInspectionMarker
           inspection={activeInspection}
           view={view}
           pinned={activeInspection.id === selectedInspectionId}
         />
       )}
-      <div className="pointer-events-none absolute bottom-3 right-3 top-3 z-10 flex flex-col items-end justify-between gap-2 md:bottom-auto md:flex-row md:items-center md:justify-start">
-        <div className="pointer-events-auto order-2 flex items-center gap-1 rounded-sm bg-black/55 px-3 py-1.5 shadow-[0_1px_8px_rgba(0,0,0,0.22)] backdrop-blur-md md:order-1">
+      <div data-canvas-controls className="pointer-events-none absolute bottom-3 right-3 top-3 z-10 flex flex-col items-end justify-between gap-2 lg:bottom-auto lg:flex-row lg:items-center lg:justify-start">
+        <div className="pointer-events-auto order-2 flex items-center gap-1 rounded-sm bg-black/55 px-3 py-0.5 shadow-[0_1px_8px_rgba(0,0,0,0.22)] backdrop-blur-md lg:order-1 lg:py-1.5">
         <button
           type="button"
-          className="no-format px-1 text-xs text-white/75"
+          className="no-format min-h-8 px-1 text-xs text-white/75 lg:min-h-0"
           aria-label="Fit selected region or first region"
           onPointerDown={(event) => event.stopPropagation()}
           onClick={(event) => {
@@ -1235,7 +1300,7 @@ export default function InfiniteLiveCanvas({
         </button>
         <button
           type="button"
-          className="no-format px-1 text-xs text-white/75"
+          className="no-format min-h-8 px-1 text-xs text-white/75 lg:min-h-0"
           aria-label="Show at 100 percent"
           onPointerDown={(event) => event.stopPropagation()}
           onClick={(event) => {
@@ -1247,7 +1312,7 @@ export default function InfiniteLiveCanvas({
         </button>
         <button
           type="button"
-          className="no-format px-1 text-xs text-white/75"
+          className="no-format min-h-8 px-1 text-xs text-white/75 lg:min-h-0"
           aria-label="Show all regions"
           onPointerDown={(event) => event.stopPropagation()}
           onClick={(event) => {
@@ -1262,7 +1327,7 @@ export default function InfiniteLiveCanvas({
         </span>
         <button
           type="button"
-          className="no-format px-1 text-xs text-white/75"
+          className="no-format min-h-8 px-1 text-xs text-white/75 lg:min-h-0"
           aria-label="Reset view"
           onPointerDown={(event) => event.stopPropagation()}
           onClick={(event) => {
@@ -1278,7 +1343,7 @@ export default function InfiniteLiveCanvas({
         {onToggleTools && (
           <button
             type="button"
-            className="no-format pointer-events-auto order-1 px-1 text-xs text-white md:order-2"
+            className="no-format pointer-events-auto order-1 min-h-9 px-1 text-xs text-white lg:order-2 lg:min-h-0"
             aria-label={toolsOpen ? 'Hide controls' : 'Open controls'}
             aria-pressed={toolsOpen}
             onPointerDown={(event) => event.stopPropagation()}

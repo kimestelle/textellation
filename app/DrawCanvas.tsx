@@ -1,6 +1,14 @@
 'use client';
 
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type PointerEvent as ReactPointerEvent,
+} from 'react';
 import { forceCollide, forceSimulation } from 'd3-force';
 import type { Simulation } from 'd3-force';
 
@@ -9,6 +17,8 @@ import { tokenizeAndBucket } from './helpers/posHelpers';
 import {
   drawAsciiParticles,
   drawBackgroundGrid,
+  drawBlendedWhiteText,
+  drawBurnedEllipseConnector,
   drawHeader,
   drawRadialGraph,
   drawWrappedColumns,
@@ -306,6 +316,8 @@ export default function DrawCanvas({
   const passageHeaderRef = useRef(passageHeader);
   const lastHitRef = useRef<CanvasInspection | null>(null);
   const lastHoverIdRef = useRef<string | null>(null);
+  const touchProbeRef = useRef<{ pointerId: number; x: number; y: number } | null>(null);
+  const suppressNextClickRef = useRef(false);
   const restViewRef = useRef<FixedViewTransform>({ tx: 0, ty: 0, zoom: 1 });
   const visibilityRef = useRef(renderVisibility);
   const redrawVisualsRef = useRef<() => void>(() => {});
@@ -322,7 +334,7 @@ export default function DrawCanvas({
   // on narrow/coarse-pointer devices. Desktop previews remain full resolution.
   const previewResolution = useMemo(() => {
     if (typeof window === 'undefined') return 1;
-    const mobileViewport = window.matchMedia('(max-width: 767px)').matches;
+    const mobileViewport = window.matchMedia('(max-width: 1023px)').matches;
     const coarsePointer = window.matchMedia('(pointer: coarse)').matches;
     return mobileViewport || coarsePointer ? 0.5 : 1;
   }, []);
@@ -331,6 +343,29 @@ export default function DrawCanvas({
   const previewBgWidth = Math.max(1, Math.round(BG_WIDTH * previewResolution));
   const previewBgHeight = Math.max(1, Math.round(BG_HEIGHT * previewResolution));
   const dynamics = COMPOSITION_PRESETS[compositionPreset].dynamics;
+
+  useEffect(() => {
+    const foreground = canvasRef.current;
+    const background = bgRef.current;
+    if (foreground) {
+      foreground.width = previewWidth;
+      foreground.height = previewHeight;
+    }
+    if (background) {
+      background.width = previewBgWidth;
+      background.height = previewBgHeight;
+    }
+    return () => {
+      if (foreground) {
+        foreground.width = 1;
+        foreground.height = 1;
+      }
+      if (background) {
+        background.width = 1;
+        background.height = 1;
+      }
+    };
+  }, [bgRef, canvasRef, previewBgHeight, previewBgWidth, previewHeight, previewWidth]);
 
   useEffect(() => {
     visibilityRef.current = renderVisibility;
@@ -391,6 +426,61 @@ export default function DrawCanvas({
     applyRestView(mode);
   }, [applyRestView, emitInspectionHover]);
 
+  const startTouchProbe = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    if (event.pointerType === 'mouse') return;
+    if ((event.target as Element).closest('[data-canvas-controls]')) return;
+    touchProbeRef.current = {
+      pointerId: event.pointerId,
+      x: event.clientX,
+      y: event.clientY,
+    };
+  }, []);
+
+  const moveTouchProbe = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    const probe = touchProbeRef.current;
+    if (!probe || probe.pointerId !== event.pointerId) return;
+    if (Math.hypot(event.clientX - probe.x, event.clientY - probe.y) > 8) {
+      touchProbeRef.current = null;
+    }
+  }, []);
+
+  const endTouchProbe = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    if (event.pointerType === 'mouse') return;
+    if ((event.target as Element).closest('[data-canvas-controls]')) {
+      touchProbeRef.current = null;
+      return;
+    }
+    suppressNextClickRef.current = true;
+    const probe = touchProbeRef.current;
+    touchProbeRef.current = null;
+    if (!probe || probe.pointerId !== event.pointerId) return;
+    if (Math.hypot(event.clientX - probe.x, event.clientY - probe.y) > 8) return;
+    const stage = stageRef.current;
+    if (!stage) return;
+    const rect = stage.getBoundingClientRect();
+    if (!rect.width || !rect.height) return;
+    const screenX = (event.clientX - rect.left) / Math.max(0.0001, scale);
+    const screenY = (event.clientY - rect.top) / Math.max(0.0001, scale);
+    const rest = restViewRef.current;
+    const worldX = (screenX - rest.tx) / Math.max(0.0001, rest.zoom);
+    const worldY = (screenY - rest.ty) / Math.max(0.0001, rest.zoom);
+    const inspection = hitTestInspection(
+      'fixed',
+      inspectionRegionsRef.current,
+      worldX - INNER_X,
+      worldY - INNER_Y,
+    );
+    emitInspectionHover(null);
+    lastHitRef.current = inspection;
+    onInspectionSelect?.(inspection);
+  }, [INNER_X, INNER_Y, emitInspectionHover, onInspectionSelect, scale]);
+
+  const cancelTouchProbe = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    if (touchProbeRef.current?.pointerId === event.pointerId) {
+      touchProbeRef.current = null;
+    }
+  }, []);
+
   useLayoutEffect(() => {
     applyRestView(viewMode, false);
   }, [applyRestView, viewMode]);
@@ -427,7 +517,8 @@ export default function DrawCanvas({
     };
   }, [BG_WIDTH, BG_HEIGHT]);
 
-  //zoom in on mouse hover or touch drag
+  // Zoom on mouse hover. Touch keeps the specimen still so a page scroll does
+  // not continuously move and repaint the camera underneath the finger.
   useEffect(() => {
     const wrapperEl = wrapperRef.current;
     const zoomEl = zoomRef.current;
@@ -541,39 +632,10 @@ export default function DrawCanvas({
       );
     };
 
-    const onTouchMove = (e: TouchEvent) => {
-      hovering = true;
-      lastX = e.touches[0].clientX;
-      lastY = e.touches[0].clientY;
-      if (!raf) raf = requestAnimationFrame(apply);
-    };
-
-    const onTouchEnd = () => {
-      hovering = false;
-      if (raf) cancelAnimationFrame(raf);
-      raf = 0;
-
-      zoomEl.style.transition = 'transform 220ms ease-out';
-      zoomEl.style.transformOrigin = 'top left';
-      const restView = restViewRef.current;
-      zoomEl.style.transform = `translate(${restView.tx}px, ${restView.ty}px) scale(${restView.zoom})`;
-      zoomEl.style.setProperty(
-        '--inspection-label-scale',
-        String(1 / Math.max(0.0001, scale * restView.zoom)),
-      );
-    };
-
-    wrapperEl.addEventListener('touchmove', onTouchMove, { passive: true });
-    wrapperEl.addEventListener('touchend', onTouchEnd);
-    wrapperEl.addEventListener('touchcancel', onTouchEnd);
-
     wrapperEl.addEventListener('mousemove', onMove);
     wrapperEl.addEventListener('mouseleave', onLeave);
 
     return () => {
-      wrapperEl.removeEventListener('touchmove', onTouchMove);
-      wrapperEl.removeEventListener('touchend', onTouchEnd);
-      wrapperEl.removeEventListener('touchcancel', onTouchEnd);
       wrapperEl.removeEventListener('mousemove', onMove);
       wrapperEl.removeEventListener('mouseleave', onLeave);
       if (raf) cancelAnimationFrame(raf);
@@ -605,6 +667,15 @@ export default function DrawCanvas({
     );
   }, [paragraphs]);
 
+  const paragraphWordCounts = useMemo(() => {
+    return structure.map((sentences) =>
+      sentences.reduce((total, sentence) => {
+        const tagged = tokenizeAndBucket(sentence);
+        return total + tagged.buckets.filter((bucket) => bucket !== 'PUNC').length;
+      }, 0),
+    );
+  }, [structure]);
+
   // paragraph ellipse sizes
   const sizes = useMemo(() => {
     return structure.map((sentences) => {
@@ -612,7 +683,6 @@ export default function DrawCanvas({
         (total, sentence) => total + tokenizeAndBucket(sentence).tokens.length,
         0,
       );
-
       const size = ellipseSizeFromWords(
         wc,
         canvasOption.W - 2 * canvasOption.MARGIN,
@@ -647,7 +717,10 @@ export default function DrawCanvas({
       const bg = bgRef.current;
       const ctx = fg?.getContext('2d');
       const bgctx = bg?.getContext('2d');
-      if (!fg || !bg || !ctx || !bgctx) return;
+      if (!fg || !bg || !ctx || !bgctx) {
+        finish(false);
+        return;
+      }
 
       try {
         const fontReady = document.fonts
@@ -757,16 +830,13 @@ export default function DrawCanvas({
           );
 
           if (layers.ellipseConnectors) {
-            bgctx.strokeStyle = 'white';
-            bgctx.lineWidth = 1;
-            bgctx.setLineDash([1, 1]);
             for (let index = 0; index < shifted.length - 1; index += 1) {
-              bgctx.beginPath();
-              bgctx.moveTo(shifted[index].x, shifted[index].y);
-              bgctx.lineTo(shifted[index + 1].x, shifted[index + 1].y);
-              bgctx.stroke();
+              drawBurnedEllipseConnector(
+                bgctx,
+                shifted[index],
+                shifted[index + 1],
+              );
             }
-            bgctx.setLineDash([]);
           }
           if (layers.ellipses || layers.ellipseSpokes || layers.ellipseLabels) {
             shifted.forEach((ellipse, index) => {
@@ -779,6 +849,7 @@ export default function DrawCanvas({
                 index,
                 {
                   visibleBounds: { x: IX, y: IY, width: IW, height: IH },
+                  wordCount: paragraphWordCounts[index],
                   showEllipse: layers.ellipses,
                   showSpokes: layers.ellipseSpokes,
                   showLabel: layers.ellipseLabels,
@@ -939,8 +1010,8 @@ export default function DrawCanvas({
               else if (node.bucket === 'NOUN') ctx.font = fonts.nounFont();
               else if (node.bucket === 'VERB') ctx.font = fonts.verbFont();
               else ctx.font = fonts.normalFont();
-              ctx.fillStyle = 'white';
-              ctx.fillText(
+              drawBlendedWhiteText(
+                ctx,
                 node.punctOnly ? punctToASCIIStar(node.text) : node.text,
                 node.x ?? 0,
                 node.y ?? 0,
@@ -987,23 +1058,53 @@ export default function DrawCanvas({
           }
         };
 
-        const finishCollisions = () => {
-          if (fieldLayout) {
-            tickAll(64);
-            resolveGlyphOverlaps(allNodes, 96);
-            const overlapCount = countGlyphOverlaps(allNodes);
-            fg.dataset.wordOverlaps = String(overlapCount);
-            fg.dataset.renderStage = 'settled';
-            if (overlapCount > 0) {
-              ctx.clearRect(0, 0, canvasOption.W, canvasOption.H);
-              ctx.fillStyle = '#f0b4b4';
-              ctx.font = '24px Newsreader, serif';
-              ctx.fillText('This passage is too dense to place without overlap.', 40, 80);
-              finish(false);
-              return false;
-            }
-            return true;
+        const constrainedBuild = window.matchMedia(
+          '(max-width: 1023px), (pointer: coarse)',
+        ).matches;
+        const yieldBuild = () => new Promise<void>((resolve) => {
+          if (document.hidden) {
+            window.setTimeout(resolve, 0);
+            return;
           }
+          animationFrame = window.requestAnimationFrame(() => resolve());
+        });
+
+        const finishFieldCollisions = async () => {
+          if (constrainedBuild) {
+            for (let tick = 0; tick < 64; tick += 4) {
+              tickAll(4);
+              if (cancelled) return false;
+              if (tick < 60) await yieldBuild();
+            }
+          } else {
+            tickAll(64);
+          }
+          let clean = false;
+          if (constrainedBuild) {
+            for (let pass = 0; pass < 96; pass += 4) {
+              clean = resolveGlyphOverlaps(allNodes, 4);
+              if (clean || cancelled) break;
+              if (pass < 92) await yieldBuild();
+            }
+          } else {
+            clean = resolveGlyphOverlaps(allNodes, 96);
+          }
+          if (cancelled) return false;
+          const overlapCount = countGlyphOverlaps(allNodes);
+          fg.dataset.wordOverlaps = String(overlapCount);
+          fg.dataset.renderStage = 'settled';
+          if (overlapCount > 0) {
+            ctx.clearRect(0, 0, canvasOption.W, canvasOption.H);
+            ctx.fillStyle = '#f0b4b4';
+            ctx.font = '24px Newsreader, serif';
+            ctx.fillText('This passage is too dense to place without overlap.', 40, 80);
+            finish(false);
+            return false;
+          }
+          return true;
+        };
+
+        const finishCollisions = () => {
           if (!globalCollisionSim) return false;
           const bounds = {
             width: canvasOption.W,
@@ -1047,6 +1148,13 @@ export default function DrawCanvas({
         const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
         if (reducedMotion || document.hidden) {
           tickAll(32);
+          if (fieldLayout) {
+            if (await finishFieldCollisions()) {
+              drawFrame();
+              finish(true);
+            }
+            return;
+          }
           if (finishCollisions()) {
             drawFrame();
             finish(true);
@@ -1063,6 +1171,14 @@ export default function DrawCanvas({
             drawFrame();
             animationFrame = window.requestAnimationFrame(advance);
           } else {
+            if (fieldLayout) {
+              void finishFieldCollisions().then((ready) => {
+                if (!ready || cancelled) return;
+                drawFrame();
+                finish(true);
+              });
+              return;
+            }
             if (finishCollisions()) {
               drawFrame();
               finish(true);
@@ -1099,7 +1215,7 @@ export default function DrawCanvas({
     compositionPreset,
     previewResolution, previewWidth, previewHeight, previewBgWidth, previewBgHeight,
     passageText,
-    paragraphs, regionRevisions, compositionRevision, sizes, structure,
+    paragraphs, paragraphWordCounts, regionRevisions, compositionRevision, sizes, structure,
     dynamics, onBuildStateChange, onReadyChange,
   ]);
 
@@ -1110,7 +1226,17 @@ export default function DrawCanvas({
       role="region"
       tabIndex={0}
       aria-label="Textellation canvas. Hover to inspect and click to pin a word or paragraph region."
-      onClick={() => onInspectionSelect?.(lastHitRef.current)}
+      onPointerDown={startTouchProbe}
+      onPointerMove={moveTouchProbe}
+      onPointerUp={endTouchProbe}
+      onPointerCancel={cancelTouchProbe}
+      onClick={() => {
+        if (suppressNextClickRef.current) {
+          suppressNextClickRef.current = false;
+          return;
+        }
+        onInspectionSelect?.(lastHitRef.current);
+      }}
       onKeyDown={(event) => {
         if (event.key !== 'Escape') return;
         onInspectionSelect?.(null);
@@ -1165,13 +1291,13 @@ export default function DrawCanvas({
           </div>
         </div>
       </div>
-      <div className="pointer-events-none absolute bottom-3 right-3 top-3 z-20 flex flex-col items-end justify-between gap-2 md:bottom-auto md:flex-row md:items-center md:justify-start">
-        <div className="pointer-events-auto order-2 flex items-center gap-1 rounded-sm bg-black/55 px-3 py-1.5 shadow-[0_1px_8px_rgba(0,0,0,0.22)] backdrop-blur-md md:order-1">
+      <div data-canvas-controls className="pointer-events-none absolute bottom-3 right-3 top-3 z-20 flex flex-col items-end justify-between gap-2 lg:bottom-auto lg:flex-row lg:items-center lg:justify-start">
+        <div className="pointer-events-auto order-2 flex items-center gap-1 rounded-sm bg-black/55 px-3 py-0.5 shadow-[0_1px_8px_rgba(0,0,0,0.22)] backdrop-blur-md lg:order-1 lg:py-1.5">
         {(['fit', '100', 'all'] as const).map((mode) => (
           <button
             key={mode}
             type="button"
-            className={`no-format px-1 text-xs ${viewMode === mode ? 'text-white' : 'text-white/65'}`}
+            className={`no-format min-h-8 px-1 text-xs lg:min-h-0 ${viewMode === mode ? 'text-white' : 'text-white/65'}`}
             aria-pressed={viewMode === mode}
             onClick={(event) => {
               event.stopPropagation();
@@ -1186,7 +1312,7 @@ export default function DrawCanvas({
         </span>
         <button
           type="button"
-          className="no-format px-1 text-xs text-white/65"
+          className="no-format min-h-8 px-1 text-xs text-white/65 lg:min-h-0"
           onClick={(event) => {
             event.stopPropagation();
             setViewMode('fit');
@@ -1201,7 +1327,7 @@ export default function DrawCanvas({
         {onToggleTools && (
           <button
             type="button"
-            className="no-format pointer-events-auto order-1 px-1 text-xs text-white md:order-2"
+            className="no-format pointer-events-auto order-1 min-h-9 px-1 text-xs text-white lg:order-2 lg:min-h-0"
             aria-label={toolsOpen ? 'Hide controls' : 'Open controls'}
             aria-pressed={toolsOpen}
             onClick={(event) => {
