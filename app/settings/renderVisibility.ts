@@ -30,10 +30,10 @@ export const PRESET_RENDER_VISIBILITY: Record<CompositionPresetId, RenderVisibil
   baseline: {
     grid: true,
     particles: true,
-    ellipseSpokes: false,
+    ellipseSpokes: true,
     ellipses: true,
     ellipseLabels: true,
-    ellipseConnectors: false,
+    ellipseConnectors: true,
     orderEdges: true,
     punctuationEdges: true,
     strongPosEdges: false,

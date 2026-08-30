@@ -50,6 +50,10 @@ import {
   DEFAULT_RENDER_VISIBILITY,
   type RenderVisibility,
 } from './settings/renderVisibility';
+import {
+  DEFAULT_BURN_MODE,
+  type BurnMode,
+} from './settings/burnMode';
 
 type ViewTransform = { x: number; y: number; scale: number };
 type ContentBounds = { x: number; y: number; width: number; height: number };
@@ -86,6 +90,7 @@ type Props = {
   compositionRevision?: number;
   compositionPreset?: CompositionPresetId;
   renderVisibility?: RenderVisibility;
+  burnMode?: BurnMode;
 };
 
 type PointerPosition = { x: number; y: number };
@@ -381,6 +386,7 @@ export default function InfiniteLiveCanvas({
   compositionRevision = 0,
   compositionPreset = 'baseline',
   renderVisibility = DEFAULT_RENDER_VISIBILITY,
+  burnMode = DEFAULT_BURN_MODE,
 }: Props) {
   const wrapperRef = useRef<HTMLDivElement | null>(null);
   const geometryCacheRef = useRef(new Map<string, RegionGeometry>());
@@ -692,7 +698,6 @@ export default function InfiniteLiveCanvas({
 
   useEffect(() => {
     let cancelled = false;
-    let reportedIdle = false;
     const simulations: Array<Simulation<WordNode, undefined>> = [];
     const workingCache = new Map(geometryCacheRef.current);
     const constrainedBuild = window.matchMedia(
@@ -734,7 +739,7 @@ export default function InfiniteLiveCanvas({
             document.fonts.load(`${canvasOption.WORD_SIZE}px Newsreader`),
             document.fonts.load(
               `${canvasOption.WORD_SIZE}px "Star Glyphs"`,
-              '\uE000',
+              '✦',
             ),
             document.fonts.ready,
           ]);
@@ -906,13 +911,11 @@ export default function InfiniteLiveCanvas({
           regions,
         });
         setIsBuilding(false);
-        reportedIdle = true;
         onBuildStateChange?.(false);
       } catch (caught) {
         if (cancelled) return;
         setError(caught instanceof Error ? caught.message : 'The live field could not render.');
         setIsBuilding(false);
-        reportedIdle = true;
         onBuildStateChange?.(false);
       }
     };
@@ -923,7 +926,7 @@ export default function InfiniteLiveCanvas({
       simulations.forEach((simulation) => simulation.stop());
       inspectionRegionsRef.current = [];
       onReadyChange?.(false);
-      if (!reportedIdle) onBuildStateChange?.(false);
+      onBuildStateChange?.(false);
     };
   }, [
     canvasOption,
@@ -962,8 +965,10 @@ export default function InfiniteLiveCanvas({
       onReadyChange?.(false);
       return;
     }
+    // A narrow desktop window is not a mobile GPU. Preserve its native pixel
+    // density and reserve the reduced backing store for touch-first devices.
     const constrainedDevice = window.matchMedia(
-      '(max-width: 1023px), (pointer: coarse)',
+      '(any-pointer: coarse), (hover: none)',
     ).matches;
     const maxDimension = constrainedDevice ? 3072 : 4096;
     const maxPixels = constrainedDevice ? 4_000_000 : 16_000_000;
@@ -1024,21 +1029,24 @@ export default function InfiniteLiveCanvas({
       view.scale,
       renderVisibility.grid,
     );
+    // Keep the paper texture beneath the semantic construction. Moving this
+    // above the particles and baked marks made the whole background feel
+    // materially different even though the substrate colors had not changed.
     drawScreenGrain(0.62);
 
     if (model) {
-      if (renderVisibility.ellipseConnectors) {
-        for (let index = 0; index < model.regions.length - 1; index += 1) {
-          const first = model.regions[index].ellipse;
-          const second = model.regions[index + 1].ellipse;
-          drawBurnedEllipseConnector(context, first, second, 0.75);
-        }
-      }
       const visibleRegions = model.regions.filter((region) =>
         compositionPreset === 'field' && region.contentBounds
           ? boundsIntersect(region.contentBounds, visible)
           : intersects(region.ellipse, visible),
       );
+      if (renderVisibility.ellipseConnectors) {
+        for (let index = 0; index < model.regions.length - 1; index += 1) {
+          const first = model.regions[index].ellipse;
+          const second = model.regions[index + 1].ellipse;
+          drawBurnedEllipseConnector(context, first, second, 0.75, burnMode);
+        }
+      }
       if (
         renderVisibility.ellipses ||
         renderVisibility.ellipseSpokes ||
@@ -1060,6 +1068,7 @@ export default function InfiniteLiveCanvas({
               showEllipse: renderVisibility.ellipses,
               showSpokes: renderVisibility.ellipseSpokes,
               showLabel: renderVisibility.ellipseLabels,
+              burnMode,
             },
           );
         });
@@ -1091,6 +1100,7 @@ export default function InfiniteLiveCanvas({
     onReadyChange?.(!isBuilding && Boolean(model) && !error);
   }, [
     canvasOption,
+    burnMode,
     canvasRef,
     compositionPreset,
     model,

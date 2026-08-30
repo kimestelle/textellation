@@ -1,5 +1,6 @@
 import { Ellipse } from "./paragraphHelpers";
 import { seededRandom } from "./randomHelpers";
+import type { BurnMode } from "../settings/burnMode";
 export const BLUE_HEX = '#272757';
 export const DEEPBLUEGREEN_HEX = '#121c2dff';
 const ELLIPSE_GLOW_RGB = '162,168,209';
@@ -17,7 +18,12 @@ const romanNumerals = [
   'XI.', 'XII.', 'XIII.', 'XIV.', 'XV.', 'XVI.', 'XVII.', 'XVIII.', 'XIX.', 'XX.'
 ];
 
-export const asciiStars = ['*', '✶', "\uE000", '✦', '.'];
+export const asciiStars = [
+  '✦',       // browser-safe replacement for the former 🟅 mark
+  '✶',       // six-pronged mark; intentionally uses the system fallback
+  '·',
+  '.',
+];
 
 export type ColumnTextOpts = {
   x: number;
@@ -38,7 +44,7 @@ export type ColumnTextOpts = {
 export function punctToASCIIStar(punct: string): string {
   if (punct === ",") return "**";
   if (punct === ".") return "✶";
-  if (punct === "!") return "\uE000";
+  if (punct === "!") return "✦";
   if (punct === "?") return "🟅";
   if (punct === ";") return "***";
   if (punct === ":") return "****";
@@ -91,6 +97,7 @@ export function drawRadialGraph(
     showSpokes?: boolean;
     showEllipse?: boolean;
     showLabel?: boolean;
+    burnMode?: BurnMode;
   }
 ) {
   const spokes = opts?.spokes ?? 16;
@@ -100,6 +107,7 @@ export function drawRadialGraph(
   const showSpokes = opts?.showSpokes ?? true;
   const showEllipse = opts?.showEllipse ?? true;
   const showLabel = opts?.showLabel ?? true;
+  const burnMode = opts?.burnMode ?? 'dark';
 
   if (showEllipse) {
     ctx.save();
@@ -131,37 +139,45 @@ export function drawRadialGraph(
     ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
     ctx.clip();
 
-    // A restrained pale offset catches one edge; the multiplied face remains
-    // dark, matching the ellipse-to-ellipse connectors and burned numerals.
     ctx.globalAlpha = baseA;
-    ctx.strokeStyle = 'rgba(255,255,255,0.11)';
     ctx.lineWidth = lw;
     ctx.setLineDash([3, 3]);
-    for (let i = 0; i < spokes; i++) {
-      const angle = (i / spokes) * Math.PI * 2;
-      ctx.beginPath();
-      ctx.moveTo(cx + 1.1, cy + 1.1);
-      ctx.lineTo(
-        cx + spokeRadius * Math.cos(angle) + 1.1,
-        cy + spokeRadius * Math.sin(angle) + 1.1,
-      );
-      ctx.stroke();
-    }
+    const strokeSpokes = (offset: number) => {
+      for (let i = 0; i < spokes; i++) {
+        const angle = (i / spokes) * Math.PI * 2;
+        ctx.beginPath();
+        ctx.moveTo(cx + offset, cy + offset);
+        ctx.lineTo(
+          cx + spokeRadius * Math.cos(angle) + offset,
+          cy + spokeRadius * Math.sin(angle) + offset,
+        );
+        ctx.stroke();
+      }
+    };
 
-    ctx.globalCompositeOperation = 'multiply';
-    const burn = ctx.createRadialGradient(cx, cy, 0, cx, cy, spokeRadius);
-    burn.addColorStop(0, 'rgba(15,11,32,0.92)');
-    burn.addColorStop(1, 'rgba(15,11,32,0.68)');
-    ctx.strokeStyle = burn;
-    for (let i = 0; i < spokes; i++) {
-      const angle = (i / spokes) * Math.PI * 2;
-      ctx.beginPath();
-      ctx.moveTo(cx, cy);
-      ctx.lineTo(
-        cx + spokeRadius * Math.cos(angle),
-        cy + spokeRadius * Math.sin(angle),
-      );
-      ctx.stroke();
+    if (burnMode === 'light') {
+      ctx.globalCompositeOperation = 'soft-light';
+      const light = ctx.createRadialGradient(cx, cy, 0, cx, cy, spokeRadius);
+      light.addColorStop(0, 'rgba(255,255,255,0.72)');
+      light.addColorStop(1, 'rgba(255,255,255,0.44)');
+      ctx.strokeStyle = light;
+      strokeSpokes(0);
+
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.strokeStyle = 'rgba(255,255,255,0.10)';
+      strokeSpokes(1.25);
+    } else {
+      // A restrained pale offset catches one edge; the multiplied face sinks
+      // into the field like the ellipse links and numerals.
+      ctx.strokeStyle = 'rgba(255,255,255,0.11)';
+      strokeSpokes(1.1);
+
+      ctx.globalCompositeOperation = 'multiply';
+      const dark = ctx.createRadialGradient(cx, cy, 0, cx, cy, spokeRadius);
+      dark.addColorStop(0, 'rgba(15,11,32,0.92)');
+      dark.addColorStop(1, 'rgba(15,11,32,0.68)');
+      ctx.strokeStyle = dark;
+      strokeSpokes(0);
     }
     ctx.restore();
   }
@@ -194,13 +210,22 @@ export function drawRadialGraph(
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
 
-  // A restrained deboss: the pale offset catches the lower edge while the
-  // multiplied face sinks into the field.
-  ctx.fillStyle = 'rgba(255,255,255,0.09)';
-  ctx.fillText(roman, labelX + 1.5, labelY + 1.5);
-  ctx.globalCompositeOperation = 'multiply';
-  ctx.fillStyle = 'rgba(22,18,42,0.58)';
-  ctx.fillText(roman, labelX, labelY);
+  if (burnMode === 'light') {
+    ctx.globalCompositeOperation = 'soft-light';
+    ctx.fillStyle = 'rgba(255,255,255,0.72)';
+    ctx.fillText(roman, labelX, labelY);
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.fillStyle = 'rgba(255,255,255,0.10)';
+    ctx.fillText(roman, labelX + 1.25, labelY + 1.25);
+  } else {
+    // A restrained deboss: the pale offset catches the lower edge while the
+    // multiplied face sinks into the field.
+    ctx.fillStyle = 'rgba(255,255,255,0.09)';
+    ctx.fillText(roman, labelX + 1.5, labelY + 1.5);
+    ctx.globalCompositeOperation = 'multiply';
+    ctx.fillStyle = 'rgba(22,18,42,0.58)';
+    ctx.fillText(roman, labelX, labelY);
+  }
   ctx.restore();
 }
 
@@ -209,23 +234,33 @@ export function drawBurnedEllipseConnector(
   first: { x: number; y: number },
   second: { x: number; y: number },
   lineScale = 1,
+  burnMode: BurnMode = 'dark',
 ) {
   ctx.save();
   ctx.lineWidth = 1.8 * lineScale;
   ctx.setLineDash([3, 3]);
 
-  ctx.strokeStyle = 'rgba(255,255,255,0.11)';
-  ctx.beginPath();
-  ctx.moveTo(first.x + 1.1, first.y + 1.1);
-  ctx.lineTo(second.x + 1.1, second.y + 1.1);
-  ctx.stroke();
+  const strokeConnector = (offset: number) => {
+    ctx.beginPath();
+    ctx.moveTo(first.x + offset, first.y + offset);
+    ctx.lineTo(second.x + offset, second.y + offset);
+    ctx.stroke();
+  };
 
-  ctx.globalCompositeOperation = 'multiply';
-  ctx.strokeStyle = 'rgba(15,11,32,0.86)';
-  ctx.beginPath();
-  ctx.moveTo(first.x, first.y);
-  ctx.lineTo(second.x, second.y);
-  ctx.stroke();
+  if (burnMode === 'light') {
+    ctx.globalCompositeOperation = 'soft-light';
+    ctx.strokeStyle = 'rgba(255,255,255,0.72)';
+    strokeConnector(0);
+    ctx.globalCompositeOperation = 'source-over';
+    ctx.strokeStyle = 'rgba(255,255,255,0.10)';
+    strokeConnector(1.25);
+  } else {
+    ctx.strokeStyle = 'rgba(255,255,255,0.11)';
+    strokeConnector(1.1);
+    ctx.globalCompositeOperation = 'multiply';
+    ctx.strokeStyle = 'rgba(15,11,32,0.86)';
+    strokeConnector(0);
+  }
   ctx.restore();
 }
 
@@ -465,9 +500,12 @@ export function drawAsciiParticles(
     sizePx?: number;           // font size
     noiseScale?: number;       // world to noise scale (smaller = larger features)
     noiseOctaves?: number;     // fBM octaves
+    probabilityBand?: { low: number; high: number }; // remap noise into density
+    probabilityScale?: number; // cap the densest parts of the field
     seed?: number;             // deterministic seed
     avoid?: Ellipse[];         // ellipses to bias away from
     avoidStrength?: number;    // how strongly to avoid
+    avoidPadding?: number;     // quiet halo beyond each ellipse
   } = {}
 ) {
   const {
@@ -475,13 +513,20 @@ export function drawAsciiParticles(
     sizePx = 12,
     noiseScale = 0.0018,
     noiseOctaves = 3,
+    probabilityBand,
+    probabilityScale = 1,
     seed = 13,
     avoid = [],
     avoidStrength = 1.4,
+    avoidPadding = 0.2,
   } = opts;
 
   const p = new Uint8Array(512);
   const rnd = seededRandom(seed);
+  // Density and mark choice are separate signals. Perlin noise decides where
+  // particles gather; a second stable stream preserves the full five-mark set
+  // instead of collapsing nearly every accepted particle to the middle glyph.
+  const glyphRnd = seededRandom(seed ^ 0x9e3779b9);
   (function makePerm() {
     const base = new Uint8Array(256);
     for (let i = 0; i < 256; i++) base[i] = i;
@@ -526,13 +571,21 @@ export function drawAsciiParticles(
     if (!avoid.length) return 1.0;
     let w = 1.0;
     for (const e of avoid) {
-      const dx = (px - e.x) / (e.rx + 1e-6);
-      const dy = (py - e.y) / (e.ry + 1e-6);
-      const d2 = dx * dx + dy * dy; // <1 inside
-      // smoothstep-like
-      const k = d2 < 1
-        ? Math.max(0, 1 - Math.pow(1 - d2, 2) * avoidStrength) // strongly push out inside
-        : 1 / (1 + Math.max(0, (1 / Math.sqrt(d2) - 1)) * 0.0); // ~1 outside
+      const halo = 1 + avoidPadding;
+      const dx = (px - e.x) / (e.rx * halo + 1e-6);
+      const dy = (py - e.y) / (e.ry * halo + 1e-6);
+      const distance = Math.hypot(dx, dy);
+
+      // The old field read as atmosphere between regions: a clear core, then
+      // a soft return just beyond the ellipse rather than stars crossing the
+      // words and radial construction. Keep that relationship deterministic.
+      const featherStart = 0.72;
+      const t = Math.max(
+        0,
+        Math.min(1, (distance - featherStart) / (1 - featherStart)),
+      );
+      const smooth = t * t * (3 - 2 * t);
+      const k = Math.pow(smooth, avoidStrength / 1.4);
       w *= k;
     }
     return w;
@@ -552,10 +605,20 @@ export function drawAsciiParticles(
     const n = fbm(px * noiseScale, py * noiseScale, noiseOctaves); // [0,1]
     const wv = avoidWeight(px, py);
 
-    const pass = n * wv > rnd() * 0.85;
+    const probability = probabilityBand
+      ? (() => {
+          const span = Math.max(1e-6, probabilityBand.high - probabilityBand.low);
+          const t = Math.max(0, Math.min(1, (n - probabilityBand.low) / span));
+          return t * t * (3 - 2 * t);
+        })()
+      : Math.min(1, n / 0.85);
+    const pass = Math.min(1, probability * probabilityScale) * wv > rnd();
     if (!pass) continue;
 
-    const idx = Math.min(asciiStars.length - 1, Math.floor(n * asciiStars.length));
+    const idx = Math.min(
+      asciiStars.length - 1,
+      Math.floor(glyphRnd() * asciiStars.length),
+    );
     const ch = asciiStars[idx];
 
     ctx.fillText(ch, px, py);

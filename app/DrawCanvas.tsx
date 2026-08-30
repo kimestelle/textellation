@@ -41,6 +41,10 @@ import {
   DEFAULT_RENDER_VISIBILITY,
   type RenderVisibility,
 } from './settings/renderVisibility';
+import {
+  DEFAULT_BURN_MODE,
+  type BurnMode,
+} from './settings/burnMode';
 
 import {
   clampEllipse,
@@ -72,6 +76,7 @@ type CanvasProps = {
   compositionRevision?: number;
   compositionPreset?: CompositionPresetId;
   renderVisibility?: RenderVisibility;
+  burnMode?: BurnMode;
 };
 
 type FixedViewMode = 'fit' | '100' | 'all';
@@ -324,6 +329,7 @@ export default function DrawCanvas({
   compositionRevision = 0,
   compositionPreset = 'baseline',
   renderVisibility = DEFAULT_RENDER_VISIBILITY,
+  burnMode = DEFAULT_BURN_MODE,
 }: CanvasProps) {
   // scale view to wrapper
   const [scale, setScale] = useState(1);
@@ -338,6 +344,7 @@ export default function DrawCanvas({
   const suppressNextClickRef = useRef(false);
   const restViewRef = useRef<FixedViewTransform>({ tx: 0, ty: 0, zoom: 1 });
   const visibilityRef = useRef(renderVisibility);
+  const burnModeRef = useRef(burnMode);
   const redrawVisualsRef = useRef<() => void>(() => {});
   const redrawBackgroundRef = useRef<() => void>(() => {});
   const redrawForegroundRef = useRef<() => void>(() => {});
@@ -351,12 +358,14 @@ export default function DrawCanvas({
   // Mobile Safari is prone to reloading the tab when the two poster canvases
   // and their composited layers are all allocated at export resolution. Keep
   // the canvas coordinate system intact while using a lighter preview bitmap
-  // on narrow/coarse-pointer devices. Desktop previews remain full resolution.
+  // on touch-first devices. A narrow desktop window still needs a true 100%
+  // view; viewport width alone must not turn the poster into an upscaled bitmap.
   const previewResolution = useMemo(() => {
     if (typeof window === 'undefined') return 1;
-    const mobileViewport = window.matchMedia('(max-width: 1023px)').matches;
-    const coarsePointer = window.matchMedia('(pointer: coarse)').matches;
-    if (!mobileViewport && !coarsePointer) return 1;
+    const touchFirstDevice = window.matchMedia(
+      '(any-pointer: coarse), (hover: none)',
+    ).matches;
+    if (!touchFirstDevice) return 1;
 
     // Bound the two visible layers and the temporary swap layers together.
     // The large poster otherwise retains more than 24 MB of canvas backing
@@ -401,6 +410,12 @@ export default function DrawCanvas({
       redrawBackgroundRef.current();
     }
   }, [renderVisibility]);
+
+  useEffect(() => {
+    if (burnModeRef.current === burnMode) return;
+    burnModeRef.current = burnMode;
+    redrawBackgroundRef.current();
+  }, [burnMode]);
 
   useEffect(() => {
     passageHeaderRef.current = passageHeader;
@@ -832,7 +847,7 @@ export default function DrawCanvas({
               document.fonts.load(`${canvasOption.WORD_SIZE}px Newsreader`),
               document.fonts.load(
                 `${canvasOption.WORD_SIZE}px "Star Glyphs"`,
-                '\uE000',
+                '✦',
               ),
               document.fonts.ready,
             ])
@@ -958,6 +973,8 @@ export default function DrawCanvas({
                 bgctx,
                 shifted[index],
                 shifted[index + 1],
+                1,
+                burnModeRef.current,
               );
             }
           }
@@ -976,6 +993,7 @@ export default function DrawCanvas({
                   showEllipse: layers.ellipses,
                   showSpokes: layers.ellipseSpokes,
                   showLabel: layers.ellipseLabels,
+                  burnMode: burnModeRef.current,
                 },
               );
             });
@@ -983,7 +1001,15 @@ export default function DrawCanvas({
           if (layers.particles) {
             drawAsciiParticles(bgctx, IX, IY, IW, IH, {
               avoid: shifted,
-              seed: dynamics.seed,
+              // Keep the decorative field stable across composition presets,
+              // as it was before preset-specific algorithm seeds were added.
+              seed: 13,
+              // One broad atmospheric field across the poster, with enough
+              // contrast to read as clustered probability rather than scatter.
+              noiseScale: 0.00065,
+              noiseOctaves: 2,
+              probabilityBand: { low: 0.38, high: 0.62 },
+              probabilityScale: 0.62,
             });
           }
 
@@ -1358,7 +1384,7 @@ export default function DrawCanvas({
       sims.forEach((simulation) => simulation.stop());
       inspectionRegionsRef.current = [];
       onReadyChange?.(false);
-      if (!settled) onBuildStateChange?.(false);
+      onBuildStateChange?.(false);
     };
   }, [
     BG_WIDTH, BG_HEIGHT,

@@ -20,6 +20,10 @@ import {
   PRESET_RENDER_VISIBILITY,
   type RenderVisibility,
 } from './settings/renderVisibility';
+import {
+  DEFAULT_BURN_MODE,
+  type BurnMode,
+} from './settings/burnMode';
 
 const DrawCanvas = dynamic(() => import('./DrawCanvas'), { ssr: false });
 const InfiniteLiveCanvas = dynamic(() => import('./InfiniteLiveCanvas'), {
@@ -49,6 +53,7 @@ type EditorSessionSnapshot = {
   canvasOptionId: string;
   compositionPreset: CompositionPresetId;
   renderVisibility: RenderVisibility;
+  burnMode: BurnMode;
 };
 
 const EDITOR_SESSION_KEY = 'textellation.editor-session.v1';
@@ -91,7 +96,8 @@ function readEditorSession(): EditorSessionSnapshot | null {
     ) {
       return null;
     }
-    return parsed as EditorSessionSnapshot;
+    const burnMode: BurnMode = parsed.burnMode === 'light' ? 'light' : 'dark';
+    return { ...parsed, burnMode } as EditorSessionSnapshot;
   } catch {
     return null;
   }
@@ -130,6 +136,9 @@ export default function Home() {
   const [appliedRenderVisibility, setAppliedRenderVisibility] = useState<RenderVisibility>(
     PRESET_RENDER_VISIBILITY.baseline,
   );
+  const [burnMode, setBurnMode] = useState<BurnMode>(DEFAULT_BURN_MODE);
+  const [appliedBurnMode, setAppliedBurnMode] = useState<BurnMode>(DEFAULT_BURN_MODE);
+  const [burnModeApplying, setBurnModeApplying] = useState(false);
   const [editorSessionRestored, setEditorSessionRestored] = useState(false);
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -147,7 +156,13 @@ export default function Home() {
   const specimenScrollFrameRef = useRef<number | null>(null);
   const exportBusyRef = useRef(false);
   const visibilityTimerRef = useRef<number | null>(null);
+  const burnModeTimerRef = useRef<number | null>(null);
+  const burnModePaintFramesRef = useRef<{ first: number | null; second: number | null }>({
+    first: null,
+    second: null,
+  });
   const renderVisibilityRef = useRef(renderVisibility);
+  const burnModeRef = useRef(burnMode);
   const editorSessionRef = useRef<EditorSessionSnapshot>({
     version: 1,
     activated: false,
@@ -156,6 +171,7 @@ export default function Home() {
     canvasOptionId: CANVAS_OPTIONS[0].id,
     compositionPreset: 'baseline',
     renderVisibility: { ...PRESET_RENDER_VISIBILITY.baseline },
+    burnMode: DEFAULT_BURN_MODE,
   });
 
   const persistEditorSession = useCallback((patch: Partial<EditorSessionSnapshot>) => {
@@ -178,12 +194,15 @@ export default function Home() {
       passageHeaderRef.current = restored.header;
       canvasOptionRef.current = restoredOption;
       renderVisibilityRef.current = restored.renderVisibility;
+      burnModeRef.current = restored.burnMode;
       setPassageText(restored.text);
       setPassageHeader(restored.header);
       setCanvasOption(restoredOption);
       setCompositionPreset(restored.compositionPreset);
       setRenderVisibility(restored.renderVisibility);
       setAppliedRenderVisibility(restored.renderVisibility);
+      setBurnMode(restored.burnMode);
+      setAppliedBurnMode(restored.burnMode);
       setEditorSessionRestored(true);
       setInfoOpen(false);
       setCanvasActivated(true);
@@ -202,10 +221,16 @@ export default function Home() {
     if (visibilityTimerRef.current !== null) {
       window.clearTimeout(visibilityTimerRef.current);
     }
+    if (burnModeTimerRef.current !== null) {
+      window.clearTimeout(burnModeTimerRef.current);
+    }
+    const burnFrames = burnModePaintFramesRef.current;
+    if (burnFrames.first !== null) window.cancelAnimationFrame(burnFrames.first);
+    if (burnFrames.second !== null) window.cancelAnimationFrame(burnFrames.second);
   }, []);
   
   const exportCanvasHandler = useCallback(async () => {
-    if (!renderReady || exportBusyRef.current) return;
+    if (!renderReady || burnModeApplying || exportBusyRef.current) return;
     exportBusyRef.current = true;
     const releaseExport = () => {
       exportBusyRef.current = false;
@@ -294,10 +319,10 @@ export default function Home() {
       exportCanvas.height = 1;
       releaseExport();
     }
-  }, [canvasOption, passageHeader, renderReady]);
+  }, [burnModeApplying, canvasOption, passageHeader, renderReady]);
 
   const canRender = useMemo(() => {
-    return Boolean(passageText && passageHeader && canvasOption);
+    return Boolean(passageText.trim() && passageHeader.trim() && canvasOption);
   }, [passageText, passageHeader, canvasOption]);
 
   const activeInspection = hoveredInspection ?? selectedInspection;
@@ -377,12 +402,56 @@ export default function Home() {
     }, 220);
   }, [persistEditorSession]);
 
+  const releaseBurnModeExport = useCallback(() => {
+    const frames = burnModePaintFramesRef.current;
+    if (frames.first !== null) window.cancelAnimationFrame(frames.first);
+    if (frames.second !== null) window.cancelAnimationFrame(frames.second);
+    frames.first = window.requestAnimationFrame(() => {
+      frames.first = null;
+      frames.second = window.requestAnimationFrame(() => {
+        frames.second = null;
+        setBurnModeApplying(false);
+      });
+    });
+  }, []);
+
+  const handleBurnModeChange = useCallback((next: BurnMode) => {
+    const pendingFrames = burnModePaintFramesRef.current;
+    if (pendingFrames.first !== null) {
+      window.cancelAnimationFrame(pendingFrames.first);
+      pendingFrames.first = null;
+    }
+    if (pendingFrames.second !== null) {
+      window.cancelAnimationFrame(pendingFrames.second);
+      pendingFrames.second = null;
+    }
+    burnModeRef.current = next;
+    setBurnMode(next);
+    setBurnModeApplying(true);
+    persistEditorSession({ burnMode: next });
+    if (burnModeTimerRef.current !== null) {
+      window.clearTimeout(burnModeTimerRef.current);
+      burnModeTimerRef.current = null;
+    }
+    if (!window.matchMedia('(max-width: 1023px), (pointer: coarse)').matches) {
+      setAppliedBurnMode(next);
+      releaseBurnModeExport();
+      return;
+    }
+    burnModeTimerRef.current = window.setTimeout(() => {
+      burnModeTimerRef.current = null;
+      setAppliedBurnMode(burnModeRef.current);
+      releaseBurnModeExport();
+    }, 220);
+  }, [persistEditorSession, releaseBurnModeExport]);
+
   const commitSave = useCallback((save: PendingSave) => {
     const { text, header, option, context } = save;
     const formatChanged = option.id !== canvasOptionRef.current.id;
-    applyingSaveRef.current = true;
-    compositionBusyRef.current = true;
-    setCompositionBusy(true);
+    const hasRenderableSource = Boolean(text.trim() && header.trim());
+    applyingSaveRef.current = hasRenderableSource;
+    compositionBusyRef.current = hasRenderableSource;
+    setCompositionBusy(hasRenderableSource);
     passageTextRef.current = text;
     passageHeaderRef.current = header;
     canvasOptionRef.current = option;
@@ -397,6 +466,14 @@ export default function Home() {
       canvasOptionId: option.id,
     });
     setHoveredInspection(null);
+    if (!hasRenderableSource) {
+      queuedSaveRef.current = null;
+      setCompositionQueued(false);
+      setSelectedInspection(null);
+      setRegionRevisions({});
+      setCompositionRevision(0);
+      return;
+    }
     if (formatChanged && window.matchMedia('(max-width: 1023px)').matches) {
       if (specimenScrollFrameRef.current !== null) {
         window.cancelAnimationFrame(specimenScrollFrameRef.current);
@@ -578,6 +655,7 @@ export default function Home() {
                   compositionRevision={compositionRevision}
                   compositionPreset={compositionPreset}
                   renderVisibility={appliedRenderVisibility}
+                  burnMode={appliedBurnMode}
                 />
               ) : (
                 <InfiniteLiveCanvas
@@ -596,6 +674,7 @@ export default function Home() {
                   compositionRevision={compositionRevision}
                   compositionPreset={compositionPreset}
                   renderVisibility={appliedRenderVisibility}
+                  burnMode={appliedBurnMode}
                 />
               )
             )}
@@ -628,7 +707,7 @@ export default function Home() {
                 onSave={handleSave}
                 onDownload={exportCanvasHandler}
                 downloadLabel={canvasOption.kind === 'infinite' ? 'download view' : 'download image'}
-                downloadDisabled={!renderReady}
+                downloadDisabled={!renderReady || burnModeApplying}
                 renderError={renderError}
                 renderedText={passageText}
                 renderedHeader={passageHeader}
@@ -646,6 +725,8 @@ export default function Home() {
                 onCompositionPresetChange={handleCompositionPresetChange}
                 renderVisibility={renderVisibility}
                 onRenderVisibilityChange={handleRenderVisibilityChange}
+                burnMode={burnMode}
+                onBurnModeChange={handleBurnModeChange}
             />
               </div>
             </aside>

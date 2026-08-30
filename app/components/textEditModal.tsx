@@ -22,6 +22,10 @@ import {
   RENDER_VISIBILITY_GROUPS,
   type RenderVisibility,
 } from '../settings/renderVisibility';
+import {
+  DEFAULT_BURN_MODE,
+  type BurnMode,
+} from '../settings/burnMode';
 
 export type SaveContext =
   | { kind: 'automatic' }
@@ -55,6 +59,8 @@ type TextEditModalProps = {
   onCompositionPresetChange?: (preset: CompositionPresetId) => void;
   renderVisibility?: RenderVisibility;
   onRenderVisibilityChange?: (update: SetStateAction<RenderVisibility>) => void;
+  burnMode?: BurnMode;
+  onBurnModeChange?: (mode: BurnMode) => void;
 };
 
 function draftSignature(text: string, header: string, option: CanvasOption) {
@@ -96,6 +102,8 @@ export default function TextEditModal({
   onCompositionPresetChange,
   renderVisibility = DEFAULT_RENDER_VISIBILITY,
   onRenderVisibilityChange,
+  burnMode = DEFAULT_BURN_MODE,
+  onBurnModeChange,
 }: TextEditModalProps) {
   const [text, setText] = useState<string>(renderedText);
   const [header, setHeader] = useState<string>(renderedHeader);
@@ -403,6 +411,8 @@ export default function TextEditModal({
               ? 'preparing text…'
               : draftQueued || compositionQueued
                 ? 'latest change queued…'
+                : !text.trim() || !header.trim()
+                  ? 'waiting for text…'
                 : renderError
                   ? renderError
                 : downloadDisabled
@@ -464,7 +474,7 @@ export default function TextEditModal({
         </div>
         <div className="flex w-full flex-col gap-2 border-t border-dashed border-white/15 pt-3">
           <span className="status-signal text-[10px] text-white/45">
-            visibility · drawing only
+            drawing · no recompose
           </span>
           {RENDER_VISIBILITY_GROUPS.map((group) => (
             <div key={group.label} className="flex flex-col gap-1">
@@ -499,6 +509,34 @@ export default function TextEditModal({
               </div>
             </div>
           ))}
+          <div className="flex min-h-11 items-center justify-between gap-4 pt-1 lg:min-h-7">
+            <span className="status-signal text-[9px] uppercase tracking-[0.08em] text-white/30">
+              baked marks
+            </span>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={burnMode === 'light'}
+              aria-label="Light baked marks"
+              className="no-format flex min-h-11 items-center gap-2 lg:min-h-7"
+              onClick={() => onBurnModeChange?.(burnMode === 'dark' ? 'light' : 'dark')}
+            >
+              <span className={`status-signal text-[10px] ${burnMode === 'dark' ? 'text-white' : 'text-white/30'}`}>
+                dark
+              </span>
+              <span
+                aria-hidden="true"
+                className={`relative h-4 w-8 rounded-full transition-colors duration-150 ${burnMode === 'light' ? 'bg-white' : 'bg-white/15'}`}
+              >
+                <span
+                  className={`absolute left-0 top-0.5 h-3 w-3 rounded-full transition-[transform,background-color] duration-150 ${burnMode === 'light' ? 'translate-x-[18px] bg-neutral-900' : 'translate-x-0.5 bg-white'}`}
+                />
+              </span>
+              <span className={`status-signal text-[10px] ${burnMode === 'light' ? 'text-white' : 'text-white/30'}`}>
+                light
+              </span>
+            </button>
+          </div>
           <button
             type="button"
             className="no-format self-end text-neutral-300"
