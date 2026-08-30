@@ -721,6 +721,9 @@ export default function DrawCanvas({
         finish(false);
         return;
       }
+      const constrainedBuild = window.matchMedia(
+        '(max-width: 1023px), (pointer: coarse)',
+      ).matches;
 
       try {
         const fontReady = document.fonts
@@ -898,7 +901,9 @@ export default function DrawCanvas({
             });
           }
         };
-        drawBackground();
+        // Keep the previous mobile poster intact while its replacement settles.
+        // Both layers are redrawn together below, immediately before ready.
+        if (!constrainedBuild) drawBackground();
 
         const paragraphNodes: WordNode[][] = [];
         const paragraphLinks: WordLink[][] = [];
@@ -1019,7 +1024,12 @@ export default function DrawCanvas({
             }
           }
         };
+        const drawSettledFrame = () => {
+          if (constrainedBuild) drawBackground();
+          drawFrame();
+        };
         redrawVisualsRef.current = () => {
+          if (constrainedBuild && !settled) return;
           drawBackground();
           drawFrame();
         };
@@ -1058,9 +1068,6 @@ export default function DrawCanvas({
           }
         };
 
-        const constrainedBuild = window.matchMedia(
-          '(max-width: 1023px), (pointer: coarse)',
-        ).matches;
         const yieldBuild = () => new Promise<void>((resolve) => {
           if (document.hidden) {
             window.setTimeout(resolve, 0);
@@ -1150,13 +1157,13 @@ export default function DrawCanvas({
           tickAll(32);
           if (fieldLayout) {
             if (await finishFieldCollisions()) {
-              drawFrame();
+              drawSettledFrame();
               finish(true);
             }
             return;
           }
           if (finishCollisions()) {
-            drawFrame();
+            drawSettledFrame();
             finish(true);
           }
           return;
@@ -1168,19 +1175,19 @@ export default function DrawCanvas({
           tickAll(4);
           frame += 1;
           if (frame < 8) {
-            drawFrame();
+            if (!constrainedBuild) drawFrame();
             animationFrame = window.requestAnimationFrame(advance);
           } else {
             if (fieldLayout) {
               void finishFieldCollisions().then((ready) => {
                 if (!ready || cancelled) return;
-                drawFrame();
+                drawSettledFrame();
                 finish(true);
               });
               return;
             }
             if (finishCollisions()) {
-              drawFrame();
+              drawSettledFrame();
               finish(true);
             }
           }
